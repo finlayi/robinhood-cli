@@ -1,7 +1,7 @@
 {
   "name": "rhx",
-  "version": "0.1.0",
-  "description": "npx launcher for the rhx Python CLI",
+  "version": "0.1.1",
+  "description": "Native npx launcher for the rhx CLI",
   "license": "MIT",
   "type": "commonjs",
   "publishConfig": {
@@ -29,7 +29,14 @@
     "npx",
     "trading"
   ],
+  "optionalDependencies": {
+    "rhx-darwin-arm64": "0.1.1",
+    "rhx-linux-x64": "0.1.1",
+    "rhx-win32-x64": "0.1.1"
+  },
   "scripts": {
-    "test": "node --test test/**/*.test.cjs"
+    "sync:versions": "node scripts/sync-platform-versions.cjs",
+    "test:versions": "node scripts/sync-platform-versions.cjs --check",
+    "test": "npm run test:versions && node --test test/**/*.test.cjs"
   }
 }

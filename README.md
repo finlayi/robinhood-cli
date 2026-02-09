@@ -30,6 +30,8 @@ pipx install .
 npx rhx --help
 ```
 
+On supported platforms (`darwin-arm64`, `linux-x64`, `win32-x64`), `npx rhx` uses a prebuilt native binary with no Python launcher setup required.
+
 ## Authentication
 
 ### Brokerage (`robin_stocks`)
@@ -160,7 +162,7 @@ Detailed guidance is in `/Users/ianfinlay/src/other/robinhood-cli/docs/testing.m
 
 1. Canonical Python package (PyPI): `pipx install rhx`
 2. Python no-install runner: `uvx --from rhx rhx ...`
-3. npm wrapper for agent ecosystems: `npx rhx ...`
+3. npm native wrapper for agent ecosystems: `npx rhx ...`
 4. Homebrew tap (optional): `brew install <tap>/rhx`
 
 Release process is documented in `/Users/ianfinlay/src/other/robinhood-cli/docs/releasing.md`.

@@ -3,19 +3,29 @@
 This project ships through two channels:
 
 1. Python package (canonical): PyPI
-2. npm wrapper (for `npx` workflows): `rhx`
+2. npm native wrapper (for `npx` workflows): `rhx` + platform packages
 
 ## Prerequisites
 
 1. PyPI trusted publishing configured for this repository.
 2. npm token in GitHub Actions secret `NPM_TOKEN` or npm trusted publishing configured.
 3. `pyproject.toml` version and `npm/package.json` version updated together.
+4. Platform package versions in sync with wrapper package:
+   - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-darwin-arm64/package.json`
+   - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-linux-x64/package.json`
+   - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-win32-x64/package.json`
 
 ## Local release checks
 
 ```bash
 .venv/bin/python -m pytest --cov=src/rhx --cov-report=term-missing
 cd npm && npm test
+```
+
+To sync platform package versions automatically:
+
+```bash
+cd npm && npm run sync:versions
 ```
 
 ## Release flow
@@ -34,6 +44,9 @@ git push origin v0.1.1
 4. GitHub Actions runs:
    - `/Users/ianfinlay/src/other/robinhood-cli/.github/workflows/release-python.yml`
    - `/Users/ianfinlay/src/other/robinhood-cli/.github/workflows/release-npm.yml`
+     - Builds native binaries (`darwin-arm64`, `linux-x64`, `win32-x64`)
+     - Publishes platform packages (`rhx-<target>`)
+     - Publishes wrapper package (`rhx`)
 
 ## Install examples after release
 

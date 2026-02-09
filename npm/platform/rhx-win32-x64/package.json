@@ -1,0 +1,27 @@
+{
+  "name": "rhx-win32-x64",
+  "version": "0.1.1",
+  "description": "Prebuilt native rhx binary for Windows x64",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/finlayi/robinhood-cli.git",
+    "directory": "npm/platform/rhx-win32-x64"
+  },
+  "bin": {
+    "rhx-native": "bin/rhx.exe"
+  },
+  "files": [
+    "bin/rhx.exe",
+    "README.md"
+  ]
+}

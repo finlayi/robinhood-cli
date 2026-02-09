@@ -1,10 +1,6 @@
 # rhx
 
-Thin npm launcher for the `rhx` Python CLI.
-
-## Why this exists
-
-`rhx` is implemented in Python. This package exists so agent workflows that prefer npm can run it via `npx`.
+Native npm launcher for the `rhx` CLI.
 
 ## Usage
 
@@ -13,15 +9,18 @@ npx rhx --help
 npx rhx quote get AAPL
 ```
 
-The launcher tries:
+Supported no-prereq platforms:
 
-1. `uvx --from rhx rhx ...`
-2. `pipx run rhx rhx ...`
-3. `python3 -m pipx run rhx rhx ...`
-4. `python -m pipx run rhx rhx ...`
+1. macOS arm64
+2. Linux x64
+3. Windows x64
 
-Set `RHX_PYPI_PACKAGE` to override the default PyPI package name:
+The package installs a matching prebuilt native binary via optional dependencies and runs it directly.
+
+If you are on an unsupported platform, `rhx` falls back to Python launchers (`uvx`/`pipx`).
+
+To force Python fallback even on a supported platform:
 
 ```bash
-RHX_PYPI_PACKAGE=robinhood-cli-rhx npx rhx --help
+RHX_ENABLE_PYTHON_FALLBACK=1 npx rhx --help
 ```

@@ -8,3 +8,8 @@ htmlcov/
 node_modules/
 npm-debug.log*
 .env
+npm/platform/*/bin/rhx
+npm/platform/*/bin/rhx.exe
+build/
+dist/
+*.spec
