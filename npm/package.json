@@ -1,0 +1,35 @@
+{
+  "name": "rhx",
+  "version": "0.1.0",
+  "description": "npx launcher for the rhx Python CLI",
+  "license": "MIT",
+  "type": "commonjs",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "rhx": "bin/rhx.cjs"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/finlayi/robinhood-cli.git",
+    "directory": "npm"
+  },
+  "keywords": [
+    "robinhood",
+    "cli",
+    "python",
+    "npx",
+    "trading"
+  ],
+  "scripts": {
+    "test": "node --test test/**/*.test.cjs"
+  }
+}

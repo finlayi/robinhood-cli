@@ -93,7 +93,57 @@ def test_live_toggle_and_guardrail(monkeypatch, tmp_path):
 
     enabled = runner.invoke(cli.app, ["--json", "--config", str(config_path), "live", "on", "--yes"])
     assert enabled.exit_code == 0, enabled.output
+    enabled_payload = json.loads(enabled.output)
+    live_token = enabled_payload["data"]["live_confirm_token"]
+    assert live_token
 
     status_after = runner.invoke(cli.app, ["--json", "--config", str(config_path), "live", "status"])
     payload_after = json.loads(status_after.output)
     assert payload_after["data"]["live_mode"] is True
+    assert payload_after["data"]["live_unlock"]["active"] is True
+
+    blocked_without_token = runner.invoke(
+        cli.app,
+        [
+            "--json",
+            "--config",
+            str(config_path),
+            "orders",
+            "stock",
+            "place",
+            "--symbol",
+            "AAPL",
+            "--side",
+            "buy",
+            "--type",
+            "market",
+            "--qty",
+            "1",
+        ],
+    )
+    assert blocked_without_token.exit_code == 6
+    blocked_without_token_payload = json.loads(blocked_without_token.output)
+    assert blocked_without_token_payload["error"]["code"] == "SAFETY_POLICY_BLOCK"
+
+    allowed_with_token = runner.invoke(
+        cli.app,
+        [
+            "--json",
+            "--config",
+            str(config_path),
+            "orders",
+            "stock",
+            "place",
+            "--symbol",
+            "AAPL",
+            "--side",
+            "buy",
+            "--type",
+            "market",
+            "--qty",
+            "1",
+            "--live-confirm-token",
+            live_token,
+        ],
+    )
+    assert allowed_with_token.exit_code == 0, allowed_with_token.output

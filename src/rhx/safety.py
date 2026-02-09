@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -53,6 +55,15 @@ class SafetyEngine:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS live_unlock (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    token_hash TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )
+                """
+            )
 
     def set_live_mode(self, enabled: bool) -> None:
         self.config.live_mode = enabled
@@ -65,6 +76,64 @@ class SafetyEngine:
             raise CLIError(
                 code=ErrorCode.LIVE_MODE_OFF,
                 message="Live mode is OFF. Enable with `rhx live on`.",
+            )
+
+    def _hash_token(self, token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def issue_live_unlock(self, ttl_seconds: int) -> tuple[str, int]:
+        token = secrets.token_urlsafe(24)
+        expires_at = int(datetime.now(UTC).timestamp()) + max(1, int(ttl_seconds))
+        token_hash = self._hash_token(token)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_unlock(id, token_hash, expires_at)
+                VALUES(1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET token_hash=excluded.token_hash, expires_at=excluded.expires_at
+                """,
+                (token_hash, expires_at),
+            )
+        return token, expires_at
+
+    def clear_live_unlock(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM live_unlock WHERE id = 1")
+
+    def live_unlock_status(self) -> dict[str, float | bool | None]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT token_hash, expires_at FROM live_unlock WHERE id = 1").fetchone()
+        if not row:
+            return {"active": False, "expires_at": None}
+        expires_at = int(row[1])
+        now = int(datetime.now(UTC).timestamp())
+        return {"active": expires_at > now, "expires_at": expires_at}
+
+    def require_live_authorization(self, token: str | None) -> None:
+        self.require_live_mode()
+        if not token:
+            raise CLIError(
+                code=ErrorCode.SAFETY_POLICY_BLOCK,
+                message="Missing live confirmation token. Run `rhx live on` and pass --live-confirm-token.",
+            )
+        with self._connect() as conn:
+            row = conn.execute("SELECT token_hash, expires_at FROM live_unlock WHERE id = 1").fetchone()
+        if not row:
+            raise CLIError(
+                code=ErrorCode.SAFETY_POLICY_BLOCK,
+                message="No active live unlock token. Run `rhx live on` again.",
+            )
+        token_hash, expires_at = row[0], int(row[1])
+        now = int(datetime.now(UTC).timestamp())
+        if expires_at <= now:
+            raise CLIError(
+                code=ErrorCode.SAFETY_POLICY_BLOCK,
+                message="Live confirmation token expired. Run `rhx live on` again.",
+            )
+        if self._hash_token(token) != token_hash:
+            raise CLIError(
+                code=ErrorCode.SAFETY_POLICY_BLOCK,
+                message="Invalid live confirmation token.",
             )
 
     def check_symbol(self, symbol: str) -> None:

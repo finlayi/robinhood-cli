@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from rhx.models import AuthStatus
 
 BROKERAGE_SERVICE = "rhx.robinhood.brokerage"
 CRYPTO_SERVICE = "rhx.robinhood.crypto"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,7 +25,8 @@ class CredentialStore:
     def _get(self, service: str, key: str) -> str | None:
         try:
             return keyring.get_password(service, key)
-        except KeyringError:
+        except KeyringError as exc:
+            logger.warning("Keyring read failed for %s:%s: %s", service, key, exc)
             return None
 
     def _set(self, service: str, key: str, value: str) -> None:
@@ -32,8 +35,8 @@ class CredentialStore:
     def _delete(self, service: str, key: str) -> None:
         try:
             keyring.delete_password(service, key)
-        except KeyringError:
-            pass
+        except KeyringError as exc:
+            logger.warning("Keyring delete failed for %s:%s: %s", service, key, exc)
 
     def get_robinhood_credentials(self, profile: str) -> tuple[str | None, str | None]:
         username = self._get(BROKERAGE_SERVICE, f"{profile}:username")
@@ -67,6 +70,7 @@ class AuthManager:
         self.profile = profile
         self.session_dir = session_dir
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self._secure_dir(self.session_dir)
         self.store = store or CredentialStore()
 
     @property
@@ -91,6 +95,27 @@ class AuthManager:
                 message=f"Failed to import robin_stocks: {exc}",
             ) from exc
 
+    def _secure_dir(self, path: Path) -> None:
+        if path.exists() and path.is_symlink():
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Refusing symlinked session directory: {path}")
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path, 0o700)
+        if path.stat().st_uid != os.getuid():
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Session directory not owned by current user: {path}")
+
+    def _secure_session_pickle(self, ensure_exists: bool = False) -> None:
+        self._secure_dir(self.session_dir)
+        p = self.session_pickle_path
+        if ensure_exists and not p.exists():
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Session pickle missing: {p}")
+        if p.exists():
+            if p.is_symlink():
+                raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Refusing symlinked session pickle: {p}")
+            st = p.stat()
+            if st.st_uid != os.getuid():
+                raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Session pickle not owned by current user: {p}")
+            os.chmod(p, 0o600)
+
     def _resolve_brokerage_credentials(self) -> tuple[str | None, str | None]:
         username = os.getenv("RH_USERNAME")
         password = os.getenv("RH_PASSWORD")
@@ -107,6 +132,9 @@ class AuthManager:
 
     def login_brokerage(self, interactive: bool = True, force: bool = False) -> AuthStatus:
         rh = self._load_rh()
+
+        self._secure_dir(self.session_dir)
+        self._secure_session_pickle(ensure_exists=False)
 
         if force and self.session_pickle_path.exists():
             self.session_pickle_path.unlink(missing_ok=True)
@@ -151,9 +179,11 @@ class AuthManager:
         if data.get("access_token") or "detail" in data:
             try:
                 self.store.set_robinhood_credentials(self.profile, username, password)
-            except Exception:
+            except Exception as exc:
                 # Credentials remain available through env vars.
-                pass
+                logger.warning("Failed to persist Robinhood credentials in keyring: %s", exc)
+
+            self._secure_session_pickle(ensure_exists=False)
 
             return AuthStatus(
                 provider="brokerage",
@@ -195,9 +225,10 @@ class AuthManager:
         try:
             rh = self._load_rh()
             rh.logout()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Brokerage logout call failed: %s", exc)
 
+        self._secure_session_pickle(ensure_exists=False)
         self.session_pickle_path.unlink(missing_ok=True)
 
         if forget_creds:

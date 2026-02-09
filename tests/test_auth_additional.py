@@ -132,3 +132,31 @@ def test_crypto_credentials_env_precedence(monkeypatch: pytest.MonkeyPatch, sess
     api_key, secret = auth.crypto_credentials()
     assert api_key == "env_key"
     assert secret == "env_secret"
+
+
+def test_login_rejects_symlinked_session_pickle(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
+    auth = AuthManager(profile="default", session_dir=session_dir, store=InMemoryStore())
+    monkeypatch.setenv("RH_USERNAME", "alice")
+    monkeypatch.setenv("RH_PASSWORD", "pw")
+    monkeypatch.setattr(auth, "_load_rh", lambda: FakeRH(response={"access_token": "tok"}))
+
+    target = session_dir / "real.pickle"
+    target.write_text("session")
+    auth.session_pickle_path.symlink_to(target)
+
+    with pytest.raises(CLIError) as exc:
+        auth.login_brokerage(interactive=False)
+    assert exc.value.code == ErrorCode.AUTH_REQUIRED
+
+
+def test_logout_rejects_symlinked_session_pickle(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
+    auth = AuthManager(profile="default", session_dir=session_dir, store=InMemoryStore())
+    monkeypatch.setattr(auth, "_load_rh", lambda: FakeRH(response={"access_token": "tok"}))
+
+    target = session_dir / "real.pickle"
+    target.write_text("session")
+    auth.session_pickle_path.symlink_to(target)
+
+    with pytest.raises(CLIError) as exc:
+        auth.logout_brokerage(forget_creds=False)
+    assert exc.value.code == ErrorCode.AUTH_REQUIRED

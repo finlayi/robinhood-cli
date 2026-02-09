@@ -228,6 +228,11 @@ def auth_logout(
 def live_on(
     ctx: typer.Context,
     yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt"),
+    ttl_seconds: int | None = typer.Option(
+        None,
+        "--ttl-seconds",
+        help="Live token TTL in seconds (defaults to config safety.live_unlock_ttl_seconds)",
+    ),
 ) -> None:
     runtime = _runtime(ctx)
 
@@ -239,8 +244,16 @@ def live_on(
 
         runtime.config.app.safety.live_mode = True
         runtime.safety.set_live_mode(True)
+        if ttl_seconds is not None:
+            runtime.config.app.safety.live_unlock_ttl_seconds = max(1, int(ttl_seconds))
+        token, expires_at = runtime.safety.issue_live_unlock(runtime.config.app.safety.live_unlock_ttl_seconds)
         save_runtime_config(runtime.config)
-        return {"live_mode": True}
+        return {
+            "live_mode": True,
+            "live_confirm_token": token,
+            "expires_at": expires_at,
+            "ttl_seconds": runtime.config.app.safety.live_unlock_ttl_seconds,
+        }
 
     _run_command(ctx, "live on", _do)
 
@@ -252,6 +265,7 @@ def live_off(ctx: typer.Context) -> None:
     def _do():
         runtime.config.app.safety.live_mode = False
         runtime.safety.set_live_mode(False)
+        runtime.safety.clear_live_unlock()
         save_runtime_config(runtime.config)
         return {"live_mode": False}
 
@@ -263,7 +277,10 @@ def live_status(ctx: typer.Context) -> None:
     runtime = _runtime(ctx)
 
     def _do():
-        return {"live_mode": runtime.safety.live_mode_enabled()}
+        return {
+            "live_mode": runtime.safety.live_mode_enabled(),
+            "live_unlock": runtime.safety.live_unlock_status(),
+        }
 
     _run_command(ctx, "live status", _do)
 
@@ -316,11 +333,12 @@ def orders_stock_place(
     stop_price: float | None = typer.Option(None, "--stop-price"),
     time_in_force: str = typer.Option("gtc", "--time-in-force"),
     extended_hours: bool = typer.Option(False, "--extended-hours"),
+    live_confirm_token: str | None = typer.Option(None, "--live-confirm-token"),
 ) -> None:
     runtime = _runtime(ctx)
 
     def _do():
-        runtime.safety.require_live_mode()
+        runtime.safety.require_live_authorization(live_confirm_token)
         intent = OrderIntentStock(
             symbol=symbol,
             side=side.lower(),
@@ -351,12 +369,13 @@ def orders_crypto_place(
     notional_usd: float | None = typer.Option(None, "--notional-usd"),
     limit_price: float | None = typer.Option(None, "--limit-price"),
     time_in_force: str = typer.Option("gtc", "--time-in-force"),
+    live_confirm_token: str | None = typer.Option(None, "--live-confirm-token"),
 ) -> None:
     runtime = _runtime(ctx)
     provider = _resolve_provider(runtime, symbol=symbol)
 
     def _do():
-        runtime.safety.require_live_mode()
+        runtime.safety.require_live_authorization(live_confirm_token)
         intent = OrderIntentCrypto(
             symbol=symbol,
             side=side.lower(),
@@ -482,11 +501,12 @@ def options_orders_place_single(
     limit_price: float | None = typer.Option(None, "--limit-price"),
     stop_price: float | None = typer.Option(None, "--stop-price"),
     time_in_force: str = typer.Option("gtc", "--time-in-force"),
+    live_confirm_token: str | None = typer.Option(None, "--live-confirm-token"),
 ) -> None:
     runtime = _runtime(ctx)
 
     def _do():
-        runtime.safety.require_live_mode()
+        runtime.safety.require_live_authorization(live_confirm_token)
         intent = OrderIntentOptionSingle(
             side=side.lower(),
             order_type=order_type.lower(),
@@ -541,11 +561,12 @@ def options_orders_place_credit_spread(
     short_strike: float = typer.Option(..., "--short-strike"),
     long_strike: float = typer.Option(..., "--long-strike"),
     time_in_force: str = typer.Option("gtc", "--time-in-force"),
+    live_confirm_token: str | None = typer.Option(None, "--live-confirm-token"),
 ) -> None:
     runtime = _runtime(ctx)
 
     def _do():
-        runtime.safety.require_live_mode()
+        runtime.safety.require_live_authorization(live_confirm_token)
         intent = OrderIntentOptionSpread(
             direction="credit",
             symbol=symbol,
@@ -580,11 +601,12 @@ def options_orders_place_debit_spread(
     short_strike: float = typer.Option(..., "--short-strike"),
     long_strike: float = typer.Option(..., "--long-strike"),
     time_in_force: str = typer.Option("gtc", "--time-in-force"),
+    live_confirm_token: str | None = typer.Option(None, "--live-confirm-token"),
 ) -> None:
     runtime = _runtime(ctx)
 
     def _do():
-        runtime.safety.require_live_mode()
+        runtime.safety.require_live_authorization(live_confirm_token)
         intent = OrderIntentOptionSpread(
             direction="debit",
             symbol=symbol,
@@ -655,6 +677,7 @@ def doctor(ctx: typer.Context) -> None:
                 "state_db": str(runtime.config.paths.state_db_path),
             },
             "safety": runtime.config.app.safety.model_dump(mode="python"),
+            "live_unlock": runtime.safety.live_unlock_status(),
             "auth": {
                 "brokerage": brokerage_status.model_dump(mode="python"),
                 "crypto": crypto_status.model_dump(mode="python"),

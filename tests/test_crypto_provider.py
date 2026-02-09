@@ -76,6 +76,14 @@ def test_missing_credentials_raise_auth_required():
     assert exc.value.code == ErrorCode.AUTH_REQUIRED
 
 
+def test_capabilities_shape():
+    provider = make_provider()
+    caps = provider.capabilities()
+    assert caps.crypto is True
+    assert caps.stocks is False
+    assert caps.options is False
+
+
 def test_sign_and_request_success(monkeypatch: pytest.MonkeyPatch):
     provider = make_provider()
     monkeypatch.setattr(crypto_module.httpx, "Client", FakeClient)
@@ -86,6 +94,19 @@ def test_sign_and_request_success(monkeypatch: pytest.MonkeyPatch):
     assert data == {"ok": True}
     assert FakeClient.last_request["headers"]["x-api-key"] == "api"
     assert "x-signature" in FakeClient.last_request["headers"]
+
+
+def test_sign_rejects_invalid_key_encoding_and_length():
+    provider = make_provider()
+
+    with pytest.raises(CLIError) as bad_encoding:
+        provider._sign("not-base64", "msg")
+    assert bad_encoding.value.code == ErrorCode.AUTH_REQUIRED
+
+    too_short = base64.b64encode(b"1" * 16).decode()
+    with pytest.raises(CLIError) as bad_length:
+        provider._sign(too_short, "msg")
+    assert bad_length.value.code == ErrorCode.AUTH_REQUIRED
 
 
 def test_request_error_mapping(monkeypatch: pytest.MonkeyPatch):
@@ -106,6 +127,16 @@ def test_request_error_mapping(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(CLIError) as broker_exc:
         provider._request("GET", "/x")
     assert broker_exc.value.code == ErrorCode.BROKER_REJECTED
+
+
+def test_request_sets_content_type_for_payload_and_handles_empty_body(monkeypatch: pytest.MonkeyPatch):
+    provider = make_provider()
+    monkeypatch.setattr(crypto_module.httpx, "Client", FakeClient)
+
+    FakeClient.response = FakeResponse(200, payload=None, raw_content=b"")
+    data = provider._request("POST", "/x", payload={"a": 1})
+    assert data == {}
+    assert FakeClient.last_request["headers"]["Content-Type"] == "application/json"
 
 
 def test_request_non_json_body_falls_back_to_text(monkeypatch: pytest.MonkeyPatch):
@@ -193,6 +224,29 @@ def test_high_level_methods_and_place_order_payloads(monkeypatch: pytest.MonkeyP
     assert listed == [{"id": "o1"}]
     assert provider.cancel_order("o1")["result"]["cancelled"] is True
     assert provider.get_order("o1")["order"]["id"] == "single"
+
+
+def test_positions_and_list_orders_fallback_branches(monkeypatch: pytest.MonkeyPatch):
+    provider = make_provider()
+
+    monkeypatch.setattr(provider, "_request", lambda method, path, payload=None, params=None: {"id": "single"})
+    assert provider.positions() == [{"id": "single"}]
+    assert provider.list_orders(open_only=False) == [{"id": "single"}]
+
+    monkeypatch.setattr(provider, "_request", lambda method, path, payload=None, params=None: "bad")
+    assert provider.positions() == []
+    assert provider.list_orders(open_only=False) == []
+
+
+def test_place_order_non_dict_response_sets_empty_ids(monkeypatch: pytest.MonkeyPatch):
+    provider = make_provider()
+    monkeypatch.setattr(provider, "_request", lambda method, path, payload=None, params=None: "queued")
+
+    intent = OrderIntentCrypto(symbol="BTC-USD", side="buy", order_type="market", amount_in="quantity", quantity=0.1)
+    result = provider.place_order(intent)
+    assert result.order_id is None
+    assert result.state is None
+    assert result.raw["response"] == "queued"
 
 
 def test_place_order_rejects_non_crypto_intent():

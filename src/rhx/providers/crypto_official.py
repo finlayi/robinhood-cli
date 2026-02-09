@@ -40,8 +40,18 @@ class RobinhoodCryptoProvider:
         return api_key, private_key_b64
 
     def _sign(self, private_key_b64: str, message: str) -> str:
-        key_bytes = base64.b64decode(private_key_b64)
-        # Robinhood credentials are typically 32-byte ed25519 secret keys.
+        try:
+            key_bytes = base64.b64decode(private_key_b64)
+        except Exception as exc:
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Invalid crypto private key encoding: {exc}") from exc
+
+        # Ed25519 private key material should be a 32-byte seed or 64-byte secret/public concat.
+        if len(key_bytes) not in (32, 64):
+            raise CLIError(
+                code=ErrorCode.AUTH_REQUIRED,
+                message="Invalid crypto private key length; expected 32 or 64 decoded bytes",
+            )
+
         seed = key_bytes[:32]
         signing_key = SigningKey(seed)
         signature = signing_key.sign(message.encode("utf-8")).signature

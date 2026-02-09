@@ -122,7 +122,9 @@ def test_cli_happy_path_command_coverage(monkeypatch: pytest.MonkeyPatch, tmp_pa
     _payload(runner.invoke(cli.app, base + ["auth", "refresh", "--non-interactive"]))
     _payload(runner.invoke(cli.app, base + ["auth", "logout", "--forget-creds"]))
 
-    _payload(runner.invoke(cli.app, base + ["live", "on", "--yes"]))
+    live_on_payload = _payload(runner.invoke(cli.app, base + ["live", "on", "--yes"]))
+    live_token = live_on_payload["data"]["live_confirm_token"]
+    assert live_token
     _payload(runner.invoke(cli.app, base + ["live", "status"]))
     _payload(runner.invoke(cli.app, base + ["account", "summary"]))
     _payload(runner.invoke(cli.app, base + ["positions", "list"]))
@@ -137,7 +139,21 @@ def test_cli_happy_path_command_coverage(monkeypatch: pytest.MonkeyPatch, tmp_pa
         runner.invoke(
             cli.app,
             base
-            + ["orders", "stock", "place", "--symbol", "AAPL", "--side", "buy", "--type", "market", "--qty", "1"],
+            + [
+                "orders",
+                "stock",
+                "place",
+                "--symbol",
+                "AAPL",
+                "--side",
+                "buy",
+                "--type",
+                "market",
+                "--qty",
+                "1",
+                "--live-confirm-token",
+                live_token,
+            ],
         )
     )
 
@@ -159,6 +175,8 @@ def test_cli_happy_path_command_coverage(monkeypatch: pytest.MonkeyPatch, tmp_pa
                 "quantity",
                 "--qty",
                 "0.1",
+                "--live-confirm-token",
+                live_token,
             ],
         )
     )
@@ -199,6 +217,8 @@ def test_cli_happy_path_command_coverage(monkeypatch: pytest.MonkeyPatch, tmp_pa
                 "200",
                 "--price",
                 "1.2",
+                "--live-confirm-token",
+                live_token,
             ],
         )
     )
@@ -226,6 +246,8 @@ def test_cli_happy_path_command_coverage(monkeypatch: pytest.MonkeyPatch, tmp_pa
                 "200",
                 "--long-strike",
                 "205",
+                "--live-confirm-token",
+                live_token,
             ],
         )
     )
@@ -253,6 +275,8 @@ def test_cli_happy_path_command_coverage(monkeypatch: pytest.MonkeyPatch, tmp_pa
                 "200",
                 "--long-strike",
                 "205",
+                "--live-confirm-token",
+                live_token,
             ],
         )
     )
@@ -287,7 +311,8 @@ def test_cli_validation_error_and_auto_fallback_to_brokerage(monkeypatch: pytest
     config_path = tmp_path / "config.toml"
     base = ["--json", "--config", str(config_path)]
 
-    runner.invoke(cli.app, base + ["live", "on", "--yes"])
+    live_on_payload = _payload(runner.invoke(cli.app, base + ["live", "on", "--yes"]))
+    live_token = live_on_payload["data"]["live_confirm_token"]
 
     bad = runner.invoke(
         cli.app,
@@ -300,12 +325,14 @@ def test_cli_validation_error_and_auto_fallback_to_brokerage(monkeypatch: pytest
             "BTC-USD",
             "--side",
             "buy",
-            "--type",
-            "market",
-            "--amount-in",
-            "quantity",
-        ],
-    )
+                "--type",
+                "market",
+                "--amount-in",
+                "quantity",
+                "--live-confirm-token",
+                live_token,
+            ],
+        )
     assert bad.exit_code == 2
     bad_payload = json.loads(bad.output)
     assert bad_payload["error"]["code"] == "VALIDATION_ERROR"
