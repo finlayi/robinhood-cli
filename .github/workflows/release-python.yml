@@ -36,6 +36,12 @@ jobs:
       - name: Check distributions
         run: python -m twine check dist/*
 
-      - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish to PyPI (Trusted Publishing)
+        if: startsWith(github.ref, 'refs/tags/') && secrets.PYPI_API_TOKEN == ''
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Publish to PyPI (API token fallback)
+        if: startsWith(github.ref, 'refs/tags/') && secrets.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
