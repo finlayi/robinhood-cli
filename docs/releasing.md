@@ -14,6 +14,8 @@ This project ships through two channels:
    - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-darwin-arm64/package.json`
    - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-linux-x64/package.json`
    - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-win32-x64/package.json`
+5. Branch protection enabled on `main` (PRs + reviews + required checks).
+6. Protected tag pattern `v*` enabled (only maintainers/admins can create release tags).
 
 ## Local release checks
 
@@ -47,6 +49,8 @@ git push origin v0.1.1
      - Builds native binaries (`darwin-arm64`, `linux-x64`, `win32-x64`)
      - Publishes platform packages (`rhx-<target>`)
      - Publishes wrapper package (`rhx`)
+
+Only users with repository write/maintain/admin access can trigger releases.
 
 ## Install examples after release
 

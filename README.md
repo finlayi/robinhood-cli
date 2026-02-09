@@ -177,3 +177,11 @@ Release process is documented in `/Users/ianfinlay/src/other/robinhood-cli/docs/
 ## Disclaimer
 
 This project uses unofficial Robinhood APIs through `robin_stocks` for non-crypto brokerage features. API behavior can change at any time.
+
+## Security
+
+For vulnerability reporting instructions, see `/Users/ianfinlay/src/other/robinhood-cli/SECURITY.md`.
+
+## License
+
+MIT. See `/Users/ianfinlay/src/other/robinhood-cli/LICENSE`.
