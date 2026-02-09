@@ -3,7 +3,9 @@ from __future__ import annotations
 import getpass
 import logging
 import os
+import pickle
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -130,6 +132,106 @@ class AuthManager:
         use_interactive = self._interactive() if interactive is None else interactive
         return self.login_brokerage(interactive=use_interactive, force=force)
 
+    def _login_brokerage_fallback(
+        self,
+        rh: Any,
+        username: str,
+        password: str,
+        mfa_code: str | None,
+    ) -> dict[str, Any]:
+        # Some robin_stocks releases can return access_token without token_type,
+        # then fail internally and return None. Fall back to direct token exchange.
+        try:
+            import requests
+            import robin_stocks.robinhood.helper as rh_helper
+        except Exception as exc:
+            raise CLIError(
+                code=ErrorCode.INTERNAL_ERROR,
+                message=f"Failed to initialize fallback login: {exc}",
+            ) from exc
+
+        device_token = str(uuid.uuid4())
+        if self.session_pickle_path.exists():
+            try:
+                with self.session_pickle_path.open("rb") as handle:
+                    cached = pickle.load(handle)
+                if isinstance(cached, dict):
+                    cached_device_token = cached.get("device_token")
+                    if isinstance(cached_device_token, str) and cached_device_token:
+                        device_token = cached_device_token
+            except Exception:
+                # If cache is unreadable, continue with a fresh device token.
+                pass
+
+        payload: dict[str, Any] = {
+            "client_id": "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
+            "expires_in": 86400,
+            "grant_type": "password",
+            "password": password,
+            "scope": "internal",
+            "username": username,
+            "device_token": device_token,
+            "try_passkeys": False,
+            "token_request_path": "/login",
+            "create_read_only_secondary_token": True,
+        }
+        if mfa_code:
+            payload["mfa_code"] = mfa_code
+
+        try:
+            response = requests.post("https://api.robinhood.com/oauth2/token/", data=payload, timeout=20)
+        except Exception as exc:
+            raise CLIError(
+                code=ErrorCode.AUTH_REQUIRED,
+                message=f"Brokerage login request failed: {exc}",
+            ) from exc
+
+        try:
+            data: Any = response.json()
+        except Exception:
+            data = {"detail": response.text or f"Brokerage login failed ({response.status_code})"}
+
+        if not isinstance(data, dict):
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message="Brokerage authentication failed")
+
+        if any(k in data for k in ("verification_workflow", "mfa_required", "challenge")):
+            raise CLIError(
+                code=ErrorCode.MFA_REQUIRED,
+                message=data.get("detail") or "MFA challenge required",
+            )
+
+        if response.status_code >= 400:
+            msg = data.get("detail") or f"Brokerage login failed ({response.status_code})"
+            lower = str(msg).lower()
+            if any(k in lower for k in ("mfa", "challenge", "verification")):
+                raise CLIError(code=ErrorCode.MFA_REQUIRED, message=str(msg))
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=str(msg))
+
+        access_token = data.get("access_token")
+        if not access_token:
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Login failed: {data}")
+
+        token_type = data.get("token_type") or "Bearer"
+        token = f"{token_type} {access_token}"
+
+        rh_helper.set_login_state(True)
+        rh.update_session("Authorization", token)
+
+        with self.session_pickle_path.open("wb") as handle:
+            pickle.dump(
+                {
+                    "token_type": token_type,
+                    "access_token": access_token,
+                    "refresh_token": data.get("refresh_token"),
+                    "device_token": device_token,
+                },
+                handle,
+            )
+
+        data.setdefault("token_type", token_type)
+        data.setdefault("detail", "Authenticated")
+        return data
+
     def login_brokerage(self, interactive: bool = True, force: bool = False) -> AuthStatus:
         rh = self._load_rh()
 
@@ -172,6 +274,14 @@ class AuthManager:
             if any(k in lower for k in ("mfa", "challenge", "verification")):
                 raise CLIError(code=ErrorCode.MFA_REQUIRED, message=msg) from exc
             raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=msg) from exc
+
+        if data is None and username and password:
+            data = self._login_brokerage_fallback(
+                rh=rh,
+                username=username,
+                password=password,
+                mfa_code=mfa_code,
+            )
 
         if not isinstance(data, dict):
             raise CLIError(code=ErrorCode.AUTH_REQUIRED, message="Brokerage authentication failed")

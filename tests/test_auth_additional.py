@@ -78,6 +78,7 @@ def test_login_non_dict_response_errors(monkeypatch: pytest.MonkeyPatch, session
     monkeypatch.setenv("RH_USERNAME", "alice")
     monkeypatch.setenv("RH_PASSWORD", "pw")
     monkeypatch.setattr(auth, "_load_rh", lambda: FakeRH(response="not-a-dict"))
+    monkeypatch.setattr(auth, "_login_brokerage_fallback", lambda *args, **kwargs: pytest.fail("unexpected fallback"))
 
     with pytest.raises(CLIError) as exc:
         auth.login_brokerage(interactive=False)
@@ -93,6 +94,33 @@ def test_login_dict_mfa_required_errors(monkeypatch: pytest.MonkeyPatch, session
     with pytest.raises(CLIError) as exc:
         auth.login_brokerage(interactive=False)
     assert exc.value.code == ErrorCode.MFA_REQUIRED
+
+
+def test_login_none_response_uses_fallback(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
+    store = InMemoryStore()
+    auth = AuthManager(profile="default", session_dir=session_dir, store=store)
+    monkeypatch.setenv("RH_USERNAME", "alice")
+    monkeypatch.setenv("RH_PASSWORD", "pw")
+    fake = FakeRH(response=None)
+    monkeypatch.setattr(auth, "_load_rh", lambda: fake)
+
+    calls: dict[str, str] = {}
+
+    def fake_fallback(rh, username: str, password: str, mfa_code: str | None):
+        calls["username"] = username
+        calls["password"] = password
+        calls["mfa_code"] = mfa_code or ""
+        assert rh is fake
+        return {"access_token": "tok", "detail": "Authenticated via fallback"}
+
+    monkeypatch.setattr(auth, "_login_brokerage_fallback", fake_fallback)
+
+    status = auth.login_brokerage(interactive=False)
+
+    assert status.authenticated is True
+    assert "fallback" in status.detail.lower()
+    assert calls["username"] == "alice"
+    assert calls["password"] == "pw"
 
 
 def test_brokerage_status_mfa_flag(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
