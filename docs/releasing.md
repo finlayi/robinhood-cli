@@ -11,9 +11,9 @@ This project ships through two channels:
 2. npm token in GitHub Actions secret `NPM_TOKEN` or npm trusted publishing configured.
 3. `pyproject.toml` version and `npm/package.json` version updated together.
 4. Platform package versions in sync with wrapper package:
-   - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-darwin-arm64/package.json`
-   - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-linux-x64/package.json`
-   - `/Users/ianfinlay/src/other/robinhood-cli/npm/platform/rhx-win32-x64/package.json`
+   - `npm/platform/rhx-darwin-arm64/package.json`
+   - `npm/platform/rhx-linux-x64/package.json`
+   - `npm/platform/rhx-win32-x64/package.json`
 5. Branch protection enabled on `main` (PRs + reviews + required checks).
 6. Protected tag pattern `v*` enabled (only maintainers/admins can create release tags).
 
@@ -33,8 +33,8 @@ cd npm && npm run sync:versions
 ## Release flow
 
 1. Bump versions:
-   - `/Users/ianfinlay/src/other/robinhood-cli/pyproject.toml`
-   - `/Users/ianfinlay/src/other/robinhood-cli/npm/package.json`
+   - `pyproject.toml`
+   - `npm/package.json`
 2. Commit + push to `main`.
 3. Create and push tag:
 
@@ -44,8 +44,8 @@ git push origin v0.1.1
 ```
 
 4. GitHub Actions runs:
-   - `/Users/ianfinlay/src/other/robinhood-cli/.github/workflows/release-python.yml`
-   - `/Users/ianfinlay/src/other/robinhood-cli/.github/workflows/release-npm.yml`
+   - `.github/workflows/release-python.yml`
+   - `.github/workflows/release-npm.yml`
      - Builds native binaries (`darwin-arm64`, `linux-x64`, `win32-x64`)
      - Publishes platform packages (`rhx-<target>`)
      - Publishes wrapper package (`rhx`)

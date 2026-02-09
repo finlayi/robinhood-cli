@@ -156,7 +156,7 @@ With coverage:
 .venv/bin/python -m pytest --cov=src/rhx --cov-report=term-missing
 ```
 
-Detailed guidance is in `/Users/ianfinlay/src/other/robinhood-cli/docs/testing.md`.
+Detailed guidance is in `docs/testing.md`.
 
 ## Distribution Channels
 
@@ -165,7 +165,7 @@ Detailed guidance is in `/Users/ianfinlay/src/other/robinhood-cli/docs/testing.m
 3. npm native wrapper for agent ecosystems: `npx rhx ...`
 4. Homebrew tap (optional): `brew install <tap>/rhx`
 
-Release process is documented in `/Users/ianfinlay/src/other/robinhood-cli/docs/releasing.md`.
+Release process is documented in `docs/releasing.md`.
 
 ## Security hardening notes
 
@@ -180,8 +180,8 @@ This project uses unofficial Robinhood APIs through `robin_stocks` for non-crypt
 
 ## Security
 
-For vulnerability reporting instructions, see `/Users/ianfinlay/src/other/robinhood-cli/SECURITY.md`.
+For vulnerability reporting instructions, see `SECURITY.md`.
 
 ## License
 
-MIT. See `/Users/ianfinlay/src/other/robinhood-cli/LICENSE`.
+MIT. See `LICENSE`.
