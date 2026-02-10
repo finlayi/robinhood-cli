@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from click.core import ParameterSource
 from pydantic import BaseModel, ValidationError
 
 from rhx.auth import AuthManager
@@ -23,6 +24,7 @@ from rhx.models import (
     OptionLeg,
 )
 from rhx.output import emit_error, emit_success, map_unexpected_error
+from rhx.output_shape import shape_data
 from rhx.providers.crypto_official import RobinhoodCryptoProvider
 from rhx.providers.robin_stocks_unofficial import RobinStocksProvider
 from rhx.safety import SafetyEngine
@@ -59,6 +61,9 @@ options_orders_app.add_typer(options_orders_place_app, name="place")
 @dataclass
 class AppRuntime:
     json_mode: bool
+    view: str
+    fields: list[str] | None
+    limit: int | None
     provider_choice: str
     config: RuntimeConfig
     auth: AuthManager
@@ -82,6 +87,34 @@ def _runtime(ctx: typer.Context) -> AppRuntime:
     if runtime is None:
         raise RuntimeError("CLI runtime not initialized")
     return runtime
+
+
+def _json_meta(runtime: AppRuntime) -> dict[str, Any] | None:
+    if not runtime.json_mode:
+        return None
+    return {"output_schema": "v2", "view": runtime.view}
+
+
+def _parse_fields(fields: str | None) -> list[str] | None:
+    if fields is None:
+        return None
+
+    parsed: list[str] = []
+    for raw in fields.split(","):
+        field = raw.strip()
+        if not field:
+            continue
+        if field not in parsed:
+            parsed.append(field)
+
+    if not parsed:
+        raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--fields requires at least one field name")
+    return parsed
+
+
+def _is_from_cli(ctx: typer.Context, parameter_name: str) -> bool:
+    source = ctx.get_parameter_source(parameter_name)
+    return source == ParameterSource.COMMANDLINE
 
 
 def _is_crypto_symbol(symbol: str) -> bool:
@@ -113,18 +146,35 @@ def _run_command(
 ) -> None:
     runtime = _runtime(ctx)
     try:
-        data = func()
-        emit_success(command, _serialize(data), runtime.json_mode, provider)
+        payload = _serialize(func())
+        meta_updates: dict[str, Any] | None = None
+        if runtime.json_mode:
+            payload, meta_updates = shape_data(
+                command=command,
+                provider=provider,
+                data=payload,
+                view=runtime.view,
+                fields=runtime.fields,
+                limit=runtime.limit,
+            )
+        emit_success(
+            command,
+            payload,
+            runtime.json_mode,
+            provider,
+            meta_updates=meta_updates,
+            view=runtime.view,
+        )
     except CLIError as err:
-        emit_error(err, command, runtime.json_mode, provider)
+        emit_error(err, command, runtime.json_mode, provider, meta_updates=_json_meta(runtime), view=runtime.view)
         raise typer.Exit(err.exit_code)
     except ValidationError as err:
         cli_err = CLIError(code=ErrorCode.VALIDATION_ERROR, message=str(err))
-        emit_error(cli_err, command, runtime.json_mode, provider)
+        emit_error(cli_err, command, runtime.json_mode, provider, meta_updates=_json_meta(runtime), view=runtime.view)
         raise typer.Exit(cli_err.exit_code)
     except Exception as exc:  # pragma: no cover
         cli_err = map_unexpected_error(exc)
-        emit_error(cli_err, command, runtime.json_mode, provider)
+        emit_error(cli_err, command, runtime.json_mode, provider, meta_updates=_json_meta(runtime), view=runtime.view)
         raise typer.Exit(cli_err.exit_code)
 
 
@@ -132,6 +182,9 @@ def _run_command(
 def main(
     ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output"),
+    view: str = typer.Option("summary", "--view", help="JSON view: summary|full"),
+    fields: str | None = typer.Option(None, "--fields", help="Comma-separated top-level fields for summary view"),
+    limit: int | None = typer.Option(None, "--limit", help="Limit list rows in JSON output"),
     profile: str = typer.Option("default", "--profile", help="Credential/profile namespace"),
     provider: str = typer.Option("auto", "--provider", help="Provider preference: auto|crypto|brokerage"),
     config: Path = typer.Option(default_config_path(), "--config", help="Config path"),
@@ -141,12 +194,60 @@ def main(
     del verbose
     del no_color
 
+    view_normalized = view.lower().strip()
+    parsed_fields = _parse_fields(fields)
+
+    if view_normalized not in {"summary", "full"}:
+        err = CLIError(code=ErrorCode.VALIDATION_ERROR, message=f"Unsupported --view: {view}. Use summary or full.")
+        emit_error(
+            err,
+            "global options",
+            json_output,
+            provider=None,
+            meta_updates={"output_schema": "v2", "view": view_normalized or "summary"},
+            view=view_normalized or "summary",
+        )
+        raise typer.Exit(err.exit_code)
+
+    if limit is not None and limit < 1:
+        err = CLIError(code=ErrorCode.VALIDATION_ERROR, message="--limit must be >= 1")
+        emit_error(
+            err,
+            "global options",
+            json_output,
+            provider=None,
+            meta_updates={"output_schema": "v2", "view": view_normalized},
+            view=view_normalized,
+        )
+        raise typer.Exit(err.exit_code)
+
+    controls_used = parsed_fields is not None or limit is not None or _is_from_cli(ctx, "view")
+    if not json_output and controls_used:
+        err = CLIError(code=ErrorCode.VALIDATION_ERROR, message="--view, --fields, and --limit require --json")
+        emit_error(err, "global options", json_output, provider=None, view=view_normalized)
+        raise typer.Exit(err.exit_code)
+
+    if parsed_fields is not None and view_normalized != "summary":
+        err = CLIError(code=ErrorCode.VALIDATION_ERROR, message="--fields requires --view summary")
+        emit_error(
+            err,
+            "global options",
+            json_output,
+            provider=None,
+            meta_updates={"output_schema": "v2", "view": view_normalized},
+            view=view_normalized,
+        )
+        raise typer.Exit(err.exit_code)
+
     runtime_cfg = load_runtime_config(config_path=config, profile=profile)
     auth = AuthManager(profile=profile, session_dir=runtime_cfg.paths.session_dir)
     safety = SafetyEngine(db_path=runtime_cfg.paths.state_db_path, config=runtime_cfg.app.safety)
 
     runtime = AppRuntime(
         json_mode=json_output,
+        view=view_normalized,
+        fields=parsed_fields,
+        limit=limit,
         provider_choice=provider,
         config=runtime_cfg,
         auth=auth,
@@ -676,6 +777,7 @@ def doctor(ctx: typer.Context) -> None:
                 "session_dir": str(runtime.config.paths.session_dir),
                 "state_db": str(runtime.config.paths.state_db_path),
             },
+            "provider_default": runtime.config.app.provider_default,
             "safety": runtime.config.app.safety.model_dump(mode="python"),
             "live_unlock": runtime.safety.live_unlock_status(),
             "auth": {

@@ -342,3 +342,72 @@ def test_cli_validation_error_and_auto_fallback_to_brokerage(monkeypatch: pytest
     assert fallback.exit_code == 0
     fallback_payload = json.loads(fallback.output)
     assert fallback_payload["provider"] == "brokerage"
+
+
+def test_cli_summary_default_full_and_selectors(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", DummyBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    summary_positions = _payload(runner.invoke(cli.app, base + ["positions", "list"]))
+    assert summary_positions["meta"]["output_schema"] == "v2"
+    assert summary_positions["meta"]["view"] == "summary"
+    assert summary_positions["data"] == [
+        {
+            "asset_type": "stock",
+            "symbol": "AAPL",
+            "position_id": None,
+            "quantity": None,
+            "quantity_available": None,
+            "quantity_held": None,
+            "cost_basis": None,
+            "market_value": None,
+            "average_buy_price": None,
+            "updated_at": None,
+        }
+    ]
+
+    full_positions = _payload(runner.invoke(cli.app, base + ["--view", "full", "positions", "list"]))
+    assert full_positions["meta"]["view"] == "full"
+    assert full_positions["data"] == [{"asset_type": "stock", "symbol": "AAPL"}]
+
+    selected_positions = _payload(runner.invoke(cli.app, base + ["--fields", "symbol,quantity", "positions", "list"]))
+    assert selected_positions["data"] == [{"symbol": "AAPL", "quantity": None}]
+    assert selected_positions["meta"]["fields"] == ["symbol", "quantity"]
+
+    limited_orders = _payload(runner.invoke(cli.app, base + ["--limit", "1", "orders", "list"]))
+    assert limited_orders["meta"]["total_count"] == 1
+    assert limited_orders["meta"]["returned_count"] == 1
+    assert limited_orders["meta"]["truncated"] is False
+
+
+def test_cli_output_selector_validation_and_json_only_enforcement(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", DummyBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    unknown_fields = runner.invoke(cli.app, base + ["--fields", "bad_field", "positions", "list"])
+    assert unknown_fields.exit_code == 2
+    unknown_payload = json.loads(unknown_fields.output)
+    assert unknown_payload["error"]["code"] == "VALIDATION_ERROR"
+    assert unknown_payload["meta"]["output_schema"] == "v2"
+    assert unknown_payload["meta"]["view"] == "summary"
+
+    fields_on_full = runner.invoke(cli.app, base + ["--view", "full", "--fields", "symbol", "positions", "list"])
+    assert fields_on_full.exit_code == 2
+    fields_on_full_payload = json.loads(fields_on_full.output)
+    assert fields_on_full_payload["error"]["code"] == "VALIDATION_ERROR"
+    assert fields_on_full_payload["meta"]["output_schema"] == "v2"
+    assert fields_on_full_payload["meta"]["view"] == "full"
+
+    no_json_view = runner.invoke(cli.app, ["--config", str(config_path), "--view", "full", "positions", "list"])
+    assert no_json_view.exit_code == 2
+    assert "VALIDATION_ERROR" in no_json_view.output
