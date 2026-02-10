@@ -142,8 +142,8 @@ class AuthManager:
         # Some robin_stocks releases can return access_token without token_type,
         # then fail internally and return None. Fall back to direct token exchange.
         try:
-            import requests
             import robin_stocks.robinhood.helper as rh_helper
+            import robin_stocks.robinhood.urls as rh_urls
         except Exception as exc:
             raise CLIError(
                 code=ErrorCode.INTERNAL_ERROR,
@@ -179,12 +179,25 @@ class AuthManager:
             payload["mfa_code"] = mfa_code
 
         try:
-            response = requests.post("https://api.robinhood.com/oauth2/token/", data=payload, timeout=20)
+            # Use robin_stocks request helper so we preserve the shared session
+            # headers/cookies established by prior auth/verification attempts.
+            response = rh_helper.request_post(
+                url=rh_urls.login_url(),
+                payload=payload,
+                timeout=20,
+                jsonify_data=False,
+            )
         except Exception as exc:
             raise CLIError(
                 code=ErrorCode.AUTH_REQUIRED,
                 message=f"Brokerage login request failed: {exc}",
             ) from exc
+
+        if response is None:
+            raise CLIError(
+                code=ErrorCode.AUTH_REQUIRED,
+                message="Brokerage login request failed",
+            )
 
         try:
             data: Any = response.json()
@@ -209,7 +222,11 @@ class AuthManager:
 
         access_token = data.get("access_token")
         if not access_token:
-            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=f"Login failed: {data}")
+            msg = str(data.get("detail") or f"Login failed: {data}")
+            lower = msg.lower()
+            if any(k in lower for k in ("mfa", "challenge", "verification")):
+                raise CLIError(code=ErrorCode.MFA_REQUIRED, message=msg)
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=msg)
 
         token_type = data.get("token_type") or "Bearer"
         token = f"{token_type} {access_token}"
@@ -286,7 +303,7 @@ class AuthManager:
         if not isinstance(data, dict):
             raise CLIError(code=ErrorCode.AUTH_REQUIRED, message="Brokerage authentication failed")
 
-        if data.get("access_token") or "detail" in data:
+        if data.get("access_token"):
             try:
                 self.store.set_robinhood_credentials(self.profile, username, password)
             except Exception as exc:
@@ -300,6 +317,13 @@ class AuthManager:
                 authenticated=True,
                 detail=data.get("detail") or "Authenticated",
             )
+
+        if "detail" in data:
+            msg = str(data["detail"])
+            lower = msg.lower()
+            if any(k in lower for k in ("mfa", "challenge", "verification")):
+                raise CLIError(code=ErrorCode.MFA_REQUIRED, message=msg)
+            raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=msg)
 
         if any(k in data for k in ("verification_workflow", "mfa_required")):
             raise CLIError(
