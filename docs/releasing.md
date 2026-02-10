@@ -32,6 +32,26 @@ cd npm && npm run sync:versions
 
 ## Release flow
 
+This repository supports both manual and automated release flows.
+
+### Automated release (recommended)
+
+On merge/push to `main`, the `Release On Main` workflow runs after `CI` succeeds:
+
+1. Reads version from:
+   - `pyproject.toml` (`[project].version`)
+   - `npm/package.json` (`version`)
+2. Verifies versions match.
+3. Creates/pushes `v<version>` tag if it does not already exist.
+4. Creates a GitHub Release for that tag.
+5. Dispatches:
+   - `.github/workflows/release-python.yml`
+   - `.github/workflows/release-npm.yml`
+
+If the tag already exists, it exits without publishing.
+
+### Manual release
+
 1. Bump versions:
    - `pyproject.toml`
    - `npm/package.json`

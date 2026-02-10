@@ -123,6 +123,40 @@ def test_login_none_response_uses_fallback(monkeypatch: pytest.MonkeyPatch, sess
     assert calls["password"] == "pw"
 
 
+def test_login_fallback_detail_only_maps_auth_required(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
+    auth = AuthManager(profile="default", session_dir=session_dir, store=InMemoryStore())
+    monkeypatch.setenv("RH_USERNAME", "alice")
+    monkeypatch.setenv("RH_PASSWORD", "pw")
+    monkeypatch.setattr(auth, "_load_rh", lambda: FakeRH(response=None))
+    monkeypatch.setattr(
+        auth,
+        "_login_brokerage_fallback",
+        lambda **kwargs: {"detail": "Unable to log in with provided credentials."},
+    )
+
+    with pytest.raises(CLIError) as exc:
+        auth.login_brokerage(interactive=False)
+
+    assert exc.value.code == ErrorCode.AUTH_REQUIRED
+
+
+def test_login_fallback_detail_only_maps_mfa_required(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
+    auth = AuthManager(profile="default", session_dir=session_dir, store=InMemoryStore())
+    monkeypatch.setenv("RH_USERNAME", "alice")
+    monkeypatch.setenv("RH_PASSWORD", "pw")
+    monkeypatch.setattr(auth, "_load_rh", lambda: FakeRH(response=None))
+    monkeypatch.setattr(
+        auth,
+        "_login_brokerage_fallback",
+        lambda **kwargs: {"detail": "Verification challenge required"},
+    )
+
+    with pytest.raises(CLIError) as exc:
+        auth.login_brokerage(interactive=False)
+
+    assert exc.value.code == ErrorCode.MFA_REQUIRED
+
+
 def test_brokerage_status_mfa_flag(monkeypatch: pytest.MonkeyPatch, session_dir: Path):
     auth = AuthManager(profile="default", session_dir=session_dir, store=InMemoryStore())
 

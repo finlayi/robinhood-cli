@@ -92,7 +92,7 @@ def test_noninteractive_uses_cached_session(monkeypatch: pytest.MonkeyPatch, ses
     auth = AuthManager(profile="default", session_dir=session_dir, store=store)
     auth.session_pickle_path.write_bytes(b"cached")
 
-    fake = FakeRH(response={"detail": "logged in using authentication"})
+    fake = FakeRH(response={"detail": "logged in using authentication", "access_token": "tok", "token_type": "Bearer"})
     monkeypatch.setattr(auth, "_load_rh", lambda: fake)
 
     status = auth.login_brokerage(interactive=False)
