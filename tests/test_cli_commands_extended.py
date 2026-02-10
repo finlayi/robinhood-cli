@@ -101,6 +101,20 @@ class DummyCryptoProvider(DummyBrokerageProvider):
     name = "crypto"
 
 
+class HumanQuoteBrokerageProvider(DummyBrokerageProvider):
+    def quote(self, symbol: str):
+        return {
+            "asset_type": "stock",
+            "symbol": symbol,
+            "quote": {
+                "bid_price": "274.50",
+                "ask_price": "274.59",
+                "last_trade_price": "273.79",
+                "updated_at": "2026-02-10T23:32:36Z",
+            },
+        }
+
+
 def _payload(result):
     assert result.exit_code == 0, result.output
     return json.loads(result.output)
@@ -411,3 +425,32 @@ def test_cli_output_selector_validation_and_json_only_enforcement(monkeypatch: p
     no_json_view = runner.invoke(cli.app, ["--config", str(config_path), "--view", "full", "positions", "list"])
     assert no_json_view.exit_code == 2
     assert "VALIDATION_ERROR" in no_json_view.output
+
+
+def test_cli_human_mode_outputs_compact_summary(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", HumanQuoteBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    result = runner.invoke(cli.app, ["--human", "--config", str(config_path), "quote", "get", "AAPL"])
+    assert result.exit_code == 0, result.output
+    assert "OK quote get" in result.output
+    assert "bid_price" in result.output
+    assert "ask_price" in result.output
+
+
+def test_cli_human_and_json_are_mutually_exclusive(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", DummyBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    result = runner.invoke(cli.app, ["--json", "--human", "--config", str(config_path), "live", "status"])
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "VALIDATION_ERROR"
+    assert "--human cannot be used with --json" in payload["error"]["message"]
+    assert payload["meta"]["output_schema"] == "v2"

@@ -61,6 +61,7 @@ options_orders_app.add_typer(options_orders_place_app, name="place")
 @dataclass
 class AppRuntime:
     json_mode: bool
+    human_mode: bool
     view: str
     fields: list[str] | None
     limit: int | None
@@ -164,6 +165,7 @@ def _run_command(
             provider,
             meta_updates=meta_updates,
             view=runtime.view,
+            human_mode=runtime.human_mode,
         )
     except CLIError as err:
         emit_error(err, command, runtime.json_mode, provider, meta_updates=_json_meta(runtime), view=runtime.view)
@@ -182,6 +184,7 @@ def _run_command(
 def main(
     ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output"),
+    human_output: bool = typer.Option(False, "--human", help="Emit compact human-readable output"),
     view: str = typer.Option("summary", "--view", help="JSON view: summary|full"),
     fields: str | None = typer.Option(None, "--fields", help="Comma-separated top-level fields for summary view"),
     limit: int | None = typer.Option(None, "--limit", help="Limit list rows in JSON output"),
@@ -206,6 +209,18 @@ def main(
             provider=None,
             meta_updates={"output_schema": "v2", "view": view_normalized or "summary"},
             view=view_normalized or "summary",
+        )
+        raise typer.Exit(err.exit_code)
+
+    if json_output and human_output:
+        err = CLIError(code=ErrorCode.VALIDATION_ERROR, message="--human cannot be used with --json")
+        emit_error(
+            err,
+            "global options",
+            json_output,
+            provider=None,
+            meta_updates={"output_schema": "v2", "view": view_normalized},
+            view=view_normalized,
         )
         raise typer.Exit(err.exit_code)
 
@@ -245,6 +260,7 @@ def main(
 
     runtime = AppRuntime(
         json_mode=json_output,
+        human_mode=human_output,
         view=view_normalized,
         fields=parsed_fields,
         limit=limit,
