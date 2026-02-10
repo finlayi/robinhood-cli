@@ -82,6 +82,9 @@ rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --l
 # Machine-readable output
 rhx --json quote get AAPL
 
+# Compact human-readable output
+rhx --human quote get AAPL
+
 # Full/raw payload view (legacy-style payloads)
 rhx --json --view full positions list
 
@@ -135,6 +138,7 @@ Every command returns:
 - Use `--json --view full` for raw/legacy provider payloads.
 - `--fields` and `--limit` are available for additional output trimming.
 - `--view`, `--fields`, and `--limit` require `--json`.
+- `--human` provides compact non-JSON text output and cannot be combined with `--json`.
 
 On failure, `ok=false` and `error.code` is one of:
 
