@@ -70,3 +70,5 @@ def test_json_envelope_shape(monkeypatch, tmp_path):
     assert payload["ok"] is True
     assert payload["command"] == "live status"
     assert isinstance(payload["meta"], dict)
+    assert payload["meta"]["output_schema"] == "v2"
+    assert payload["meta"]["view"] == "summary"

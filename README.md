@@ -8,7 +8,7 @@ Auth-first Robinhood CLI wrapper for agent workflows.
 - Wraps Robinhood's official crypto trading API when crypto API credentials are configured.
 - Keeps brokerage auth persistent via session pickle and keychain-backed credentials.
 - Uses global live mode + short-lived confirmation token + configurable safety limits before placing orders.
-- Emits deterministic JSON envelopes with `--json` for automation.
+- Emits deterministic JSON envelopes with `--json` for automation, with summary-default payloads.
 
 ## Install
 
@@ -82,6 +82,15 @@ rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --l
 # Machine-readable output
 rhx --json quote get AAPL
 
+# Full/raw payload view (legacy-style payloads)
+rhx --json --view full positions list
+
+# Trim response fields for agent context efficiency
+rhx --json --fields symbol,quantity positions list
+
+# Limit list payload size
+rhx --json --limit 10 orders list
+
 # Stock order (brokerage)
 TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
 rhx orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
@@ -112,9 +121,20 @@ Every command returns:
   "provider": null,
   "data": {"live_mode": false},
   "error": null,
-  "meta": {"timestamp": "2026-02-09T00:00:00Z"}
+  "meta": {
+    "timestamp": "2026-02-09T00:00:00Z",
+    "output_schema": "v2",
+    "view": "summary"
+  }
 }
 ```
+
+### v0.2.0 migration note
+
+- `--json` now defaults to `--view summary` for compact payloads.
+- Use `--json --view full` for raw/legacy provider payloads.
+- `--fields` and `--limit` are available for additional output trimming.
+- `--view`, `--fields`, and `--limit` require `--json`.
 
 On failure, `ok=false` and `error.code` is one of:
 
