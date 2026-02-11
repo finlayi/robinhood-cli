@@ -59,15 +59,21 @@ function copyDirectoryContents(sourceDir, destinationDir) {
   }
 }
 
-function ensureDarwinPythonShim(binDir) {
-  const shimPath = path.join(binDir, "_internal", "Python");
+function resolveDarwinFrameworkBinary(binDir, shimPath) {
   if (fs.existsSync(shimPath)) {
-    return;
+    const shimStat = fs.lstatSync(shimPath);
+    if (shimStat.isSymbolicLink()) {
+      const symlinkTarget = fs.readlinkSync(shimPath);
+      const symlinkResolved = path.resolve(path.dirname(shimPath), symlinkTarget);
+      if (fs.existsSync(symlinkResolved) && fs.statSync(symlinkResolved).isFile()) {
+        return symlinkResolved;
+      }
+    }
   }
 
   const versionsDir = path.join(binDir, "_internal", "Python.framework", "Versions");
   if (!fs.existsSync(versionsDir)) {
-    return;
+    return null;
   }
 
   const entries = fs.readdirSync(versionsDir);
@@ -82,10 +88,29 @@ function ensureDarwinPythonShim(binDir) {
     if (!binaryStat.isFile()) {
       continue;
     }
-    fs.copyFileSync(frameworkBinary, shimPath);
-    fs.chmodSync(shimPath, 0o755);
+    return frameworkBinary;
+  }
+
+  return null;
+}
+
+function ensureDarwinPythonShim(binDir) {
+  const shimPath = path.join(binDir, "_internal", "Python");
+  const frameworkBinary = resolveDarwinFrameworkBinary(binDir, shimPath);
+  if (!frameworkBinary) {
     return;
   }
+
+  if (fs.existsSync(shimPath)) {
+    const shimStat = fs.lstatSync(shimPath);
+    if (shimStat.isFile() && !shimStat.isSymbolicLink()) {
+      return;
+    }
+    fs.rmSync(shimPath, { force: true });
+  }
+
+  fs.copyFileSync(frameworkBinary, shimPath);
+  fs.chmodSync(shimPath, 0o755);
 }
 
 const { target, source } = parseArgs(process.argv.slice(2));
