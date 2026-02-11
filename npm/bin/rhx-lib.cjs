@@ -25,7 +25,8 @@ function resolveNativeBinary({
   platform = process.platform,
   arch = process.arch,
   requireResolve = require.resolve,
-  exists = fs.existsSync
+  exists = fs.existsSync,
+  baseDir = __dirname
 } = {}) {
   const key = targetKey(platform, arch);
   const spec = NATIVE_TARGETS[key];
@@ -39,18 +40,24 @@ function resolveNativeBinary({
     };
   }
 
-  try {
-    const packageJsonPath = requireResolve(`${spec.packageName}/package.json`);
-    const binaryPath = path.join(path.dirname(packageJsonPath), spec.binaryRelPath);
+  const localNodeModulesBinary = path.resolve(
+    baseDir,
+    "..",
+    "node_modules",
+    spec.packageName,
+    spec.binaryRelPath
+  );
+  if (exists(localNodeModulesBinary)) {
+    return {
+      supported: true,
+      key,
+      packageName: spec.packageName,
+      binaryPath: localNodeModulesBinary
+    };
+  }
 
-    if (!exists(binaryPath)) {
-      return {
-        supported: true,
-        key,
-        packageName: spec.packageName,
-        binaryPath: null
-      };
-    }
+  try {
+    const binaryPath = requireResolve(`${spec.packageName}/${spec.binaryRelPath}`);
 
     return {
       supported: true,

@@ -17,7 +17,7 @@ const TARGETS = {
   "win32-x64": {
     packageDir: path.resolve(__dirname, "..", "platform", "rhx-win32-x64"),
     outputName: "rhx.exe",
-    defaultSource: path.resolve(process.cwd(), "dist", "rhx.exe")
+    defaultSource: path.resolve(process.cwd(), "dist", "rhx")
   }
 };
 
@@ -42,6 +42,22 @@ function fail(message) {
   process.exit(1);
 }
 
+function clearDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true });
+  for (const entry of fs.readdirSync(directoryPath)) {
+    fs.rmSync(path.join(directoryPath, entry), { recursive: true, force: true });
+  }
+}
+
+function copyDirectoryContents(sourceDir, destinationDir) {
+  for (const entry of fs.readdirSync(sourceDir)) {
+    fs.cpSync(path.join(sourceDir, entry), path.join(destinationDir, entry), {
+      recursive: true,
+      force: true
+    });
+  }
+}
+
 const { target, source } = parseArgs(process.argv.slice(2));
 
 if (!target) {
@@ -55,14 +71,25 @@ if (!spec) {
 
 const sourcePath = source ? path.resolve(source) : spec.defaultSource;
 if (!fs.existsSync(sourcePath)) {
-  fail(`Built binary not found: ${sourcePath}`);
+  fail(`Built runtime not found: ${sourcePath}`);
 }
 
 const binDir = path.join(spec.packageDir, "bin");
 const destination = path.join(binDir, spec.outputName);
+clearDirectory(binDir);
 
-fs.mkdirSync(binDir, { recursive: true });
-fs.copyFileSync(sourcePath, destination);
+const sourceStat = fs.statSync(sourcePath);
+if (sourceStat.isFile()) {
+  fs.copyFileSync(sourcePath, destination);
+} else if (sourceStat.isDirectory()) {
+  const sourceExecutable = path.join(sourcePath, spec.outputName);
+  if (!fs.existsSync(sourceExecutable)) {
+    fail(`Built runtime missing executable: ${sourceExecutable}`);
+  }
+  copyDirectoryContents(sourcePath, binDir);
+} else {
+  fail(`Unsupported source type: ${sourcePath}`);
+}
 
 if (target !== "win32-x64") {
   fs.chmodSync(destination, 0o755);

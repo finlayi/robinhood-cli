@@ -19,20 +19,38 @@ test("resolveNativeBinary returns unsupported for unknown platform", () => {
   assert.equal(native.binaryPath, null);
 });
 
-test("resolveNativeBinary resolves installed platform package", () => {
+test("resolveNativeBinary resolves installed platform package from local node_modules", () => {
+  const localPath = "/tmp/rhx/node_modules/rhx-linux-x64/bin/rhx";
   const native = resolveNativeBinary({
     platform: "linux",
     arch: "x64",
-    requireResolve: (id) => {
-      assert.equal(id, "rhx-linux-x64/package.json");
-      return "/tmp/rhx-linux-x64/package.json";
+    baseDir: "/tmp/rhx/bin",
+    requireResolve: () => {
+      throw new Error("requireResolve should not run for local fast path");
     },
-    exists: (binaryPath) => binaryPath === "/tmp/rhx-linux-x64/bin/rhx"
+    exists: (binaryPath) => binaryPath === localPath
   });
 
   assert.equal(native.supported, true);
   assert.equal(native.packageName, "rhx-linux-x64");
-  assert.equal(native.binaryPath, "/tmp/rhx-linux-x64/bin/rhx");
+  assert.equal(native.binaryPath, localPath);
+});
+
+test("resolveNativeBinary falls back to module resolution for nonstandard layouts", () => {
+  const native = resolveNativeBinary({
+    platform: "linux",
+    arch: "x64",
+    baseDir: "/tmp/rhx/bin",
+    requireResolve: (id) => {
+      assert.equal(id, "rhx-linux-x64/bin/rhx");
+      return "/tmp/custom-layout/rhx-linux-x64/bin/rhx";
+    },
+    exists: () => false
+  });
+
+  assert.equal(native.supported, true);
+  assert.equal(native.packageName, "rhx-linux-x64");
+  assert.equal(native.binaryPath, "/tmp/custom-layout/rhx-linux-x64/bin/rhx");
 });
 
 test("buildLaunchers includes uvx first and passes args", () => {
