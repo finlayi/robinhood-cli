@@ -255,7 +255,11 @@ def main(
         raise typer.Exit(err.exit_code)
 
     runtime_cfg = load_runtime_config(config_path=config, profile=profile)
-    auth = AuthManager(profile=profile, session_dir=runtime_cfg.paths.session_dir)
+    auth = AuthManager(
+        profile=profile,
+        session_dir=runtime_cfg.paths.session_dir,
+        suppress_external_output=json_output,
+    )
     safety = SafetyEngine(db_path=runtime_cfg.paths.state_db_path, config=runtime_cfg.app.safety)
 
     runtime = AppRuntime(
@@ -566,7 +570,11 @@ def orders_list(
         provider = runtime.crypto_provider
 
     def _do():
-        return provider.list_orders(open_only=open_only, asset_type=asset_type)
+        return provider.list_orders(
+            open_only=open_only,
+            asset_type=asset_type,
+            symbol_resolve_limit=runtime.limit,
+        )
 
     _run_command(ctx, "orders list", _do, provider=provider.name)
 
@@ -774,7 +782,11 @@ def options_orders_list(
     runtime = _runtime(ctx)
 
     def _do():
-        return runtime.brokerage_provider.list_orders(open_only=open_only, asset_type="option")
+        return runtime.brokerage_provider.list_orders(
+            open_only=open_only,
+            asset_type="option",
+            symbol_resolve_limit=runtime.limit,
+        )
 
     _run_command(ctx, "options orders list", _do, provider="brokerage")
 

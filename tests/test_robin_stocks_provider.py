@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 
 from rhx.errors import CLIError, ErrorCode
@@ -8,6 +10,10 @@ from rhx.providers.robin_stocks_unofficial import RobinStocksProvider
 
 
 class FakeAuth:
+    @contextmanager
+    def external_output_guard(self):
+        yield
+
     def ensure_brokerage_authenticated(self, interactive: bool = False, force: bool = False):
         del interactive, force
         return None
@@ -19,6 +25,8 @@ class FakeAuth:
 class FakeRH:
     def __init__(self):
         self.called: list[str] = []
+        self.symbol_by_url: dict[str, str | Exception | None] = {}
+        self.symbol_lookup_calls: list[str] = []
 
     def load_account_profile(self):
         return {"account": "a"}
@@ -45,6 +53,13 @@ class FakeRH:
     def get_quotes(self, symbol):
         self.called.append("get_quotes")
         return [{"symbol": symbol}]
+
+    def get_symbol_by_url(self, url):
+        self.symbol_lookup_calls.append(url)
+        value = self.symbol_by_url.get(url)
+        if isinstance(value, Exception):
+            raise value
+        return value
 
     def order_buy_market(self, *args, **kwargs):
         self.called.append("order_buy_market")
@@ -338,3 +353,77 @@ def test_cancel_get_errors_when_all_handlers_fail(provider):
     with pytest.raises(CLIError) as get_exc:
         p.get_order("x")
     assert get_exc.value.code == ErrorCode.BROKER_REJECTED
+
+
+def test_list_orders_symbol_hydration_resolves_and_caches(provider):
+    p, fake_rh = provider
+    url_one = "https://api.robinhood.com/instruments/1/"
+    url_two = "https://api.robinhood.com/instruments/2/"
+
+    fake_rh.symbol_by_url = {
+        url_one: "VOO",
+        url_two: "AAPL",
+    }
+    fake_rh.get_all_stock_orders = lambda: [
+        {"id": "s1", "instrument": url_one},
+        {"id": "s2", "instrument": url_one, "symbol": None},
+        {"id": "s3", "instrument": url_two, "symbol": ""},
+    ]
+
+    rows = p.list_orders(open_only=False, asset_type="stock", symbol_resolve_limit=10)
+    assert rows[0]["symbol"] == "VOO"
+    assert rows[1]["symbol"] == "VOO"
+    assert rows[2]["symbol"] == "AAPL"
+    assert fake_rh.symbol_lookup_calls.count(url_one) == 1
+    assert fake_rh.symbol_lookup_calls.count(url_two) == 1
+
+
+def test_list_orders_symbol_hydration_respects_limit(provider):
+    p, fake_rh = provider
+    url_one = "https://api.robinhood.com/instruments/1/"
+    url_two = "https://api.robinhood.com/instruments/2/"
+    url_three = "https://api.robinhood.com/instruments/3/"
+
+    fake_rh.symbol_by_url = {
+        url_one: "VOO",
+        url_two: "AAPL",
+        url_three: "MSFT",
+    }
+    fake_rh.get_all_stock_orders = lambda: [
+        {"id": "s1", "instrument": url_one},
+        {"id": "s2", "instrument": url_two},
+        {"id": "s3", "instrument": url_three},
+    ]
+
+    rows = p.list_orders(open_only=False, asset_type="stock", symbol_resolve_limit=1)
+    assert rows[0]["symbol"] == "VOO"
+    assert rows[1].get("symbol") is None
+    assert rows[2].get("symbol") is None
+    assert len(fake_rh.symbol_lookup_calls) == 1
+
+
+def test_list_orders_symbol_hydration_default_limit_is_bounded(provider):
+    p, fake_rh = provider
+    stock_rows = []
+    for idx in range(205):
+        url = f"https://api.robinhood.com/instruments/{idx}/"
+        stock_rows.append({"id": str(idx), "instrument": url})
+        fake_rh.symbol_by_url[url] = f"S{idx}"
+
+    fake_rh.get_all_stock_orders = lambda: stock_rows
+    rows = p.list_orders(open_only=False, asset_type="stock")
+
+    assert len(fake_rh.symbol_lookup_calls) == 200
+    assert rows[199]["symbol"] == "S199"
+    assert rows[200].get("symbol") is None
+
+
+def test_list_orders_symbol_hydration_is_best_effort(provider):
+    p, fake_rh = provider
+    url_one = "https://api.robinhood.com/instruments/1/"
+    fake_rh.symbol_by_url = {url_one: RuntimeError("lookup failed")}
+    fake_rh.get_all_stock_orders = lambda: [{"id": "s1", "instrument": url_one}]
+
+    rows = p.list_orders(open_only=False, asset_type="stock", symbol_resolve_limit=10)
+    assert rows[0].get("symbol") is None
+    assert fake_rh.symbol_lookup_calls == [url_one]

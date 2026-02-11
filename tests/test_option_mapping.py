@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 
 from rhx.models import OrderIntentOptionSingle, OrderIntentOptionSpread, OptionLeg
@@ -7,6 +9,10 @@ from rhx.providers.robin_stocks_unofficial import RobinStocksProvider
 
 
 class FakeAuth:
+    @contextmanager
+    def external_output_guard(self):
+        yield
+
     def ensure_brokerage_authenticated(self, interactive: bool = False, force: bool = False):
         del interactive, force
         return None

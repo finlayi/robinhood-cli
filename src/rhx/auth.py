@@ -6,6 +6,7 @@ import os
 import pickle
 import sys
 import uuid
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -68,12 +69,19 @@ class CredentialStore:
 
 
 class AuthManager:
-    def __init__(self, profile: str, session_dir: Path, store: CredentialStore | None = None) -> None:
+    def __init__(
+        self,
+        profile: str,
+        session_dir: Path,
+        store: CredentialStore | None = None,
+        suppress_external_output: bool = False,
+    ) -> None:
         self.profile = profile
         self.session_dir = session_dir
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._secure_dir(self.session_dir)
         self.store = store or CredentialStore()
+        self.suppress_external_output = suppress_external_output
 
     @property
     def session_pickle_path(self) -> Path:
@@ -85,6 +93,43 @@ class AuthManager:
 
     def _interactive(self) -> bool:
         return sys.stdin.isatty()
+
+    @contextmanager
+    def external_output_guard(self):
+        if not self.suppress_external_output:
+            yield
+            return
+
+        helper = None
+        try:
+            import robin_stocks.robinhood.helper as rh_helper
+
+            helper = rh_helper
+        except Exception:
+            helper = None
+
+        with open(os.devnull, "w") as sink:
+            previous_output = None
+            if helper is not None:
+                try:
+                    previous_output = helper.get_output()
+                except Exception:
+                    previous_output = None
+                try:
+                    helper.set_output(sink)
+                except Exception:
+                    pass
+
+            try:
+                with redirect_stdout(sink), redirect_stderr(sink):
+                    yield
+            finally:
+                if helper is not None:
+                    restore_stream = previous_output if previous_output is not None else sys.stdout
+                    try:
+                        helper.set_output(restore_stream)
+                    except Exception:
+                        pass
 
     def _load_rh(self):
         try:
@@ -277,14 +322,15 @@ class AuthManager:
 
         mfa_code = os.getenv("RH_MFA_CODE")
         try:
-            data = rh.login(
-                username=username,
-                password=password,
-                store_session=True,
-                mfa_code=mfa_code,
-                pickle_path=str(self.session_dir),
-                pickle_name=self.pickle_name,
-            )
+            with self.external_output_guard():
+                data = rh.login(
+                    username=username,
+                    password=password,
+                    store_session=True,
+                    mfa_code=mfa_code,
+                    pickle_path=str(self.session_dir),
+                    pickle_name=self.pickle_name,
+                )
         except Exception as exc:
             msg = str(exc)
             lower = msg.lower()
@@ -293,12 +339,13 @@ class AuthManager:
             raise CLIError(code=ErrorCode.AUTH_REQUIRED, message=msg) from exc
 
         if data is None and username and password:
-            data = self._login_brokerage_fallback(
-                rh=rh,
-                username=username,
-                password=password,
-                mfa_code=mfa_code,
-            )
+            with self.external_output_guard():
+                data = self._login_brokerage_fallback(
+                    rh=rh,
+                    username=username,
+                    password=password,
+                    mfa_code=mfa_code,
+                )
 
         if not isinstance(data, dict):
             raise CLIError(code=ErrorCode.AUTH_REQUIRED, message="Brokerage authentication failed")
@@ -358,7 +405,8 @@ class AuthManager:
     def logout_brokerage(self, forget_creds: bool = False) -> None:
         try:
             rh = self._load_rh()
-            rh.logout()
+            with self.external_output_guard():
+                rh.logout()
         except Exception as exc:
             logger.warning("Brokerage logout call failed: %s", exc)
 

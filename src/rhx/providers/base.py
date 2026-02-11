@@ -35,4 +35,9 @@ class BrokerProvider(Protocol):
 
     def get_order(self, order_id: str, asset_type: str | None = None) -> dict[str, Any]: ...
 
-    def list_orders(self, open_only: bool = False, asset_type: str | None = None) -> list[dict[str, Any]]: ...
+    def list_orders(
+        self,
+        open_only: bool = False,
+        asset_type: str | None = None,
+        symbol_resolve_limit: int | None = None,
+    ) -> list[dict[str, Any]]: ...
