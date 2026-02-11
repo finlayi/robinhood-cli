@@ -7,6 +7,7 @@ from rhx.errors import CLIError, ErrorCode
 from rhx.models import (
     AuthStatus,
     CapabilitySet,
+    OptionQuoteRecord,
     OrderIntentCrypto,
     OrderIntentOptionSingle,
     OrderIntentOptionSpread,
@@ -87,6 +88,46 @@ class RobinStocksProvider:
         if isinstance(quote, list):
             quote = quote[0] if quote else {}
         return {"asset_type": "stock", "symbol": symbol, "quote": quote}
+
+    def quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
+        self._ensure_auth(interactive=False)
+        requested = [symbol.strip() for symbol in symbols if symbol and symbol.strip()]
+        if not requested:
+            return []
+
+        stock_symbols = [symbol for symbol in requested if "-" not in symbol]
+        crypto_symbols = [symbol for symbol in requested if "-" in symbol]
+
+        stock_rows: dict[str, dict[str, Any]] = {}
+        if stock_symbols:
+            raw = self._call_quiet(self._rh.get_quotes, stock_symbols)
+            quote_rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            for idx, row in enumerate(quote_rows):
+                if not isinstance(row, dict):
+                    continue
+                symbol = row.get("symbol")
+                if not isinstance(symbol, str) or not symbol:
+                    if idx < len(stock_symbols):
+                        symbol = stock_symbols[idx]
+                    else:
+                        continue
+                stock_rows[symbol.upper()] = {"asset_type": "stock", "symbol": symbol, "quote": row}
+
+        crypto_rows: dict[str, dict[str, Any]] = {}
+        for symbol in crypto_symbols:
+            base = symbol.split("-", 1)[0]
+            quote = self._call_quiet(self._rh.get_crypto_quote, base)
+            crypto_rows[symbol.upper()] = {"asset_type": "crypto", "symbol": symbol, "quote": quote}
+
+        rows: list[dict[str, Any]] = []
+        for symbol in requested:
+            normalized = symbol.upper()
+            if normalized in stock_rows:
+                rows.append(stock_rows[normalized])
+                continue
+            if normalized in crypto_rows:
+                rows.append(crypto_rows[normalized])
+        return rows
 
     def place_order(self, intent: OrderIntent) -> OrderResult:
         self._ensure_auth(interactive=False)
@@ -348,6 +389,107 @@ class RobinStocksProvider:
 
         return result or []
 
+    def option_expirations(self, symbol: str) -> list[str]:
+        chain = self.option_chains(symbol)
+        expirations = chain.get("expiration_dates")
+        if not isinstance(expirations, list):
+            return []
+        return sorted({str(value) for value in expirations if isinstance(value, str) and value})
+
+    def option_strikes(
+        self,
+        symbol: str,
+        expiration_date: str,
+        option_type: str | None = None,
+    ) -> list[float]:
+        contracts = self.option_contracts_find(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            option_type=self._normalize_option_type(option_type),
+        )
+        strikes: set[float] = set()
+        for contract in contracts:
+            strike = self._safe_float(contract.get("strike_price"))
+            if strike is not None:
+                strikes.add(strike)
+        return sorted(strikes)
+
+    def option_quote_get(
+        self,
+        symbol: str,
+        expiration_date: str,
+        strike_price: float,
+        option_type: str,
+    ) -> dict[str, Any]:
+        self._ensure_auth(interactive=False)
+        normalized_type = self._normalize_option_type(option_type, allow_both=False)
+
+        instrument = self._call_quiet(
+            self._rh.get_option_instrument_data,
+            symbol,
+            expiration_date,
+            strike_price,
+            normalized_type,
+        )
+        if isinstance(instrument, list):
+            instrument = instrument[0] if instrument else {}
+        if not isinstance(instrument, dict):
+            instrument = {}
+
+        market = self._call_quiet(
+            self._rh.get_option_market_data,
+            symbol,
+            expiration_date,
+            strike_price,
+            normalized_type,
+        )
+        if isinstance(market, list):
+            market = market[0] if market else {}
+        if not isinstance(market, dict):
+            market = {}
+
+        quote = self._normalize_option_quote(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            strike_price=strike_price,
+            option_type=normalized_type,
+            contract=instrument,
+            market=market,
+        )
+        return quote.model_dump(mode="python")
+
+    def option_quotes_list(
+        self,
+        symbol: str,
+        expiration_date: str,
+        option_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_type = self._normalize_option_type(option_type)
+        contracts = self.option_contracts_find(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            option_type=normalized_type,
+        )
+
+        rows: list[dict[str, Any]] = []
+        for contract in contracts:
+            if not isinstance(contract, dict):
+                continue
+            market = self._option_market_data_for_contract(contract)
+            strike_value = self._safe_float(contract.get("strike_price"))
+            if strike_value is None:
+                continue
+            quote = self._normalize_option_quote(
+                symbol=symbol,
+                expiration_date=expiration_date,
+                strike_price=strike_value,
+                option_type=str(contract.get("type") or normalized_type or "").lower() or "call",
+                contract=contract,
+                market=market,
+            )
+            rows.append(quote.model_dump(mode="python"))
+        return rows
+
     def _hydrate_stock_order_symbols(self, items: list[dict[str, Any]], symbol_resolve_limit: int | None) -> None:
         if not items:
             return
@@ -407,3 +549,115 @@ class RobinStocksProvider:
             ("option", self._rh.get_option_order_info),
             ("crypto", self._rh.get_crypto_order_info),
         ]
+
+    def _normalize_option_type(self, option_type: str | None, allow_both: bool = True) -> str | None:
+        if option_type is None:
+            return None
+        normalized = option_type.strip().lower()
+        if allow_both and normalized in {"", "both"}:
+            return None
+        if normalized not in {"call", "put"}:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message=f"Unsupported option type: {option_type}")
+        return normalized
+
+    def _safe_float(self, value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _safe_str(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    def _option_market_data_for_contract(self, contract: dict[str, Any]) -> dict[str, Any]:
+        market: Any = {}
+        market_by_id_available = False
+        contract_id = contract.get("id")
+        if isinstance(contract_id, str) and contract_id:
+            try:
+                market = self._call_quiet(self._rh.get_option_market_data_by_id, contract_id)
+                market_by_id_available = True
+            except Exception:
+                market = {}
+
+        if market_by_id_available:
+            if isinstance(market, list):
+                market = market[0] if market else {}
+            if isinstance(market, dict):
+                return market
+            return {}
+
+        chain_symbol = contract.get("chain_symbol")
+        expiration_date = contract.get("expiration_date")
+        strike_price = contract.get("strike_price")
+        option_type = contract.get("type")
+        if not all((chain_symbol, expiration_date, strike_price, option_type)):
+            return {}
+
+        try:
+            market = self._call_quiet(
+                self._rh.get_option_market_data,
+                chain_symbol,
+                expiration_date,
+                float(strike_price),
+                option_type,
+            )
+        except Exception:
+            return {}
+
+        if isinstance(market, list):
+            market = market[0] if market else {}
+        return market if isinstance(market, dict) else {}
+
+    def _normalize_option_quote(
+        self,
+        *,
+        symbol: str,
+        expiration_date: str,
+        strike_price: float,
+        option_type: str,
+        contract: dict[str, Any] | None = None,
+        market: dict[str, Any] | None = None,
+    ) -> OptionQuoteRecord:
+        contract_payload = contract or {}
+        market_payload = market or {}
+        greeks = market_payload.get("greeks")
+        greeks_payload = greeks if isinstance(greeks, dict) else {}
+
+        resolved_type = str(contract_payload.get("type") or option_type or "call").lower()
+        if resolved_type not in {"call", "put"}:
+            resolved_type = "call"
+
+        return OptionQuoteRecord(
+            contract_id=self._safe_str(contract_payload.get("id")),
+            symbol=self._safe_str(contract_payload.get("chain_symbol")) or symbol,
+            expiration_date=self._safe_str(contract_payload.get("expiration_date")) or expiration_date,
+            strike_price=self._safe_float(contract_payload.get("strike_price")) or strike_price,
+            option_type=resolved_type,
+            bid_price=self._safe_str(market_payload.get("bid_price") or market_payload.get("bid")),
+            ask_price=self._safe_str(market_payload.get("ask_price") or market_payload.get("ask")),
+            mark_price=self._safe_str(
+                market_payload.get("mark_price")
+                or market_payload.get("adjusted_mark_price")
+                or market_payload.get("mark")
+            ),
+            last_trade_price=self._safe_str(
+                market_payload.get("last_trade_price")
+                or market_payload.get("last_trade_price_24h")
+            ),
+            implied_volatility=self._safe_str(market_payload.get("implied_volatility") or market_payload.get("iv")),
+            delta=self._safe_str(market_payload.get("delta") or greeks_payload.get("delta")),
+            gamma=self._safe_str(market_payload.get("gamma") or greeks_payload.get("gamma")),
+            theta=self._safe_str(market_payload.get("theta") or greeks_payload.get("theta")),
+            vega=self._safe_str(market_payload.get("vega") or greeks_payload.get("vega")),
+            rho=self._safe_str(market_payload.get("rho") or greeks_payload.get("rho")),
+            open_interest=self._safe_str(market_payload.get("open_interest")),
+            volume=self._safe_str(market_payload.get("volume")),
+            updated_at=self._safe_str(market_payload.get("updated_at") or contract_payload.get("updated_at")),
+            tradability=self._safe_str(contract_payload.get("tradability")),
+            state=self._safe_str(contract_payload.get("state")),
+        )

@@ -287,6 +287,164 @@ def _summarize_quote(data: Any, provider: str | None) -> dict[str, Any]:
     return summary
 
 
+QUOTE_LIST_FIELDS = (
+    "symbol",
+    "asset_type",
+    "provider",
+    "bid_price",
+    "ask_price",
+    "mark_price",
+    "last_trade_price",
+    "updated_at",
+    "error",
+)
+QUOTE_LIST_PATHS: dict[str, tuple[CandidatePath, ...]] = {
+    "symbol": (_path("symbol"), _path("quote", "symbol")),
+    "asset_type": (_path("asset_type"), _path("quote", "asset_type")),
+    "provider": (_path("provider"),),
+    "bid_price": (_path("bid_price"), _path("quote", "bid_price"), _path("quote", "bid")),
+    "ask_price": (_path("ask_price"), _path("quote", "ask_price"), _path("quote", "ask")),
+    "mark_price": (_path("mark_price"), _path("quote", "mark_price"), _path("quote", "price")),
+    "last_trade_price": (_path("last_trade_price"), _path("quote", "last_trade_price"), _path("quote", "price")),
+    "updated_at": (_path("updated_at"), _path("quote", "updated_at"), _path("quote", "timestamp")),
+    "error": (_path("error"),),
+}
+
+
+def _summarize_quote_list(data: Any, provider: str | None) -> list[dict[str, Any]]:
+    del provider
+    return _normalize_list(data, QUOTE_LIST_FIELDS, QUOTE_LIST_PATHS)
+
+
+OPTIONS_EXPIRATION_FIELDS = (
+    "symbol",
+    "expiration_count",
+    "next_expiration",
+    "last_expiration",
+)
+OPTIONS_EXPIRATION_PATHS: dict[str, tuple[CandidatePath, ...]] = {
+    "symbol": (_path("symbol"),),
+    "expiration_count": (_path("expiration_count"),),
+    "next_expiration": (_path("next_expiration"),),
+    "last_expiration": (_path("last_expiration"),),
+}
+
+
+def _summarize_options_expirations(data: Any, provider: str | None) -> dict[str, Any]:
+    del provider
+    payload = _as_dict(data)
+    summary = _normalize_object(payload, OPTIONS_EXPIRATION_FIELDS, OPTIONS_EXPIRATION_PATHS)
+    expirations = payload.get("expiration_dates")
+    if isinstance(expirations, list):
+        if summary["expiration_count"] is None:
+            summary["expiration_count"] = len(expirations)
+        if summary["next_expiration"] is None and expirations:
+            summary["next_expiration"] = expirations[0]
+        if summary["last_expiration"] is None and expirations:
+            summary["last_expiration"] = expirations[-1]
+    return summary
+
+
+OPTIONS_STRIKES_FIELDS = (
+    "symbol",
+    "expiration_date",
+    "option_type",
+    "strike_count",
+    "min_strike",
+    "max_strike",
+)
+OPTIONS_STRIKES_PATHS: dict[str, tuple[CandidatePath, ...]] = {
+    "symbol": (_path("symbol"),),
+    "expiration_date": (_path("expiration_date"),),
+    "option_type": (_path("option_type"),),
+    "strike_count": (_path("strike_count"),),
+    "min_strike": (_path("min_strike"),),
+    "max_strike": (_path("max_strike"),),
+}
+
+
+def _summarize_options_strikes(data: Any, provider: str | None) -> dict[str, Any]:
+    del provider
+    payload = _as_dict(data)
+    summary = _normalize_object(payload, OPTIONS_STRIKES_FIELDS, OPTIONS_STRIKES_PATHS)
+    strikes = payload.get("strikes")
+    if isinstance(strikes, list) and strikes:
+        numeric: list[float] = []
+        for value in strikes:
+            if not isinstance(value, (int, float, str)):
+                continue
+            try:
+                numeric.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if numeric:
+            if summary["strike_count"] is None:
+                summary["strike_count"] = len(numeric)
+            if summary["min_strike"] is None:
+                summary["min_strike"] = min(numeric)
+            if summary["max_strike"] is None:
+                summary["max_strike"] = max(numeric)
+    elif summary["strike_count"] is None:
+        summary["strike_count"] = 0
+    return summary
+
+
+OPTION_QUOTE_FIELDS = (
+    "contract_id",
+    "symbol",
+    "expiration_date",
+    "strike_price",
+    "option_type",
+    "bid_price",
+    "ask_price",
+    "mark_price",
+    "last_trade_price",
+    "implied_volatility",
+    "delta",
+    "gamma",
+    "theta",
+    "vega",
+    "rho",
+    "open_interest",
+    "volume",
+    "updated_at",
+    "tradability",
+    "state",
+)
+OPTION_QUOTE_PATHS: dict[str, tuple[CandidatePath, ...]] = {
+    "contract_id": (_path("contract_id"), _path("id")),
+    "symbol": (_path("symbol"), _path("chain_symbol")),
+    "expiration_date": (_path("expiration_date"),),
+    "strike_price": (_path("strike_price"), _path("strike")),
+    "option_type": (_path("option_type"), _path("type")),
+    "bid_price": (_path("bid_price"), _path("bid")),
+    "ask_price": (_path("ask_price"), _path("ask")),
+    "mark_price": (_path("mark_price"), _path("mark")),
+    "last_trade_price": (_path("last_trade_price"),),
+    "implied_volatility": (_path("implied_volatility"), _path("iv")),
+    "delta": (_path("delta"),),
+    "gamma": (_path("gamma"),),
+    "theta": (_path("theta"),),
+    "vega": (_path("vega"),),
+    "rho": (_path("rho"),),
+    "open_interest": (_path("open_interest"),),
+    "volume": (_path("volume"),),
+    "updated_at": (_path("updated_at"),),
+    "tradability": (_path("tradability"),),
+    "state": (_path("state"),),
+}
+
+
+def _summarize_option_quote(data: Any, provider: str | None) -> dict[str, Any]:
+    del provider
+    return _normalize_object(data, OPTION_QUOTE_FIELDS, OPTION_QUOTE_PATHS)
+
+
+def _summarize_option_quote_list(data: Any, provider: str | None) -> list[dict[str, Any]]:
+    del provider
+    return _normalize_list(data, OPTION_QUOTE_FIELDS, OPTION_QUOTE_PATHS)
+
+
 ORDER_PLACE_FIELDS = (
     "asset_type",
     "order_id",
@@ -675,9 +833,33 @@ def _summarize_doctor(data: Any, provider: str | None) -> dict[str, Any]:
     return _normalize_object(data, DOCTOR_FIELDS, DOCTOR_PATHS)
 
 
+PORTFOLIO_ANALYZE_FIELDS = (
+    "account",
+    "allocation",
+    "concentration",
+    "exposure",
+    "alerts",
+    "generated_at",
+)
+PORTFOLIO_ANALYZE_PATHS: dict[str, tuple[CandidatePath, ...]] = {
+    "account": (_path("account"),),
+    "allocation": (_path("allocation"),),
+    "concentration": (_path("concentration"),),
+    "exposure": (_path("exposure"),),
+    "alerts": (_path("alerts"),),
+    "generated_at": (_path("generated_at"),),
+}
+
+
+def _summarize_portfolio_analyze(data: Any, provider: str | None) -> dict[str, Any]:
+    del provider
+    return _normalize_object(data, PORTFOLIO_ANALYZE_FIELDS, PORTFOLIO_ANALYZE_PATHS)
+
+
 SUMMARY_SPECS: dict[str, SummarySpec] = {
     "auth login": SummarySpec(fields=("brokerage", "session_pickle"), summarize=_summarize_identity),
     "auth status": SummarySpec(fields=("brokerage", "crypto"), summarize=_summarize_identity),
+    "auth verify": SummarySpec(fields=("brokerage", "crypto"), summarize=_summarize_identity),
     "auth refresh": SummarySpec(fields=("brokerage",), summarize=_summarize_identity),
     "auth logout": SummarySpec(fields=("logged_out", "forget_creds", "session_pickle"), summarize=_summarize_identity),
     "live on": SummarySpec(fields=("live_mode", "live_confirm_token", "expires_at", "ttl_seconds"), summarize=_summarize_identity),
@@ -686,13 +868,18 @@ SUMMARY_SPECS: dict[str, SummarySpec] = {
     "account summary": SummarySpec(fields=ACCOUNT_SUMMARY_FIELDS, summarize=_summarize_account_summary),
     "positions list": SummarySpec(fields=POSITIONS_FIELDS, summarize=_summarize_positions),
     "quote get": SummarySpec(fields=QUOTE_FIELDS, summarize=_summarize_quote),
+    "quote list": SummarySpec(fields=QUOTE_LIST_FIELDS, summarize=_summarize_quote_list),
     "orders stock place": SummarySpec(fields=ORDER_PLACE_FIELDS, summarize=_summarize_order_place),
     "orders crypto place": SummarySpec(fields=ORDER_PLACE_FIELDS, summarize=_summarize_order_place),
     "orders get": SummarySpec(fields=ORDER_DETAIL_FIELDS, summarize=_summarize_order_detail),
     "orders cancel": SummarySpec(fields=CANCEL_FIELDS, summarize=_summarize_cancel),
     "orders list": SummarySpec(fields=ORDER_DETAIL_FIELDS, summarize=_summarize_order_detail_list),
     "options chains": SummarySpec(fields=OPTIONS_CHAINS_FIELDS, summarize=_summarize_options_chains),
+    "options expirations": SummarySpec(fields=OPTIONS_EXPIRATION_FIELDS, summarize=_summarize_options_expirations),
+    "options strikes": SummarySpec(fields=OPTIONS_STRIKES_FIELDS, summarize=_summarize_options_strikes),
     "options contracts find": SummarySpec(fields=OPTION_CONTRACT_FIELDS, summarize=_summarize_option_contracts),
+    "options quotes get": SummarySpec(fields=OPTION_QUOTE_FIELDS, summarize=_summarize_option_quote),
+    "options quotes list": SummarySpec(fields=OPTION_QUOTE_FIELDS, summarize=_summarize_option_quote_list),
     "options orders place single": SummarySpec(fields=ORDER_PLACE_FIELDS, summarize=_summarize_order_place),
     "options orders place credit-spread": SummarySpec(fields=ORDER_PLACE_FIELDS, summarize=_summarize_order_place),
     "options orders place debit-spread": SummarySpec(fields=ORDER_PLACE_FIELDS, summarize=_summarize_order_place),
@@ -700,6 +887,7 @@ SUMMARY_SPECS: dict[str, SummarySpec] = {
     "options orders cancel": SummarySpec(fields=CANCEL_FIELDS, summarize=_summarize_cancel),
     "options orders list": SummarySpec(fields=ORDER_DETAIL_FIELDS, summarize=_summarize_order_detail_list),
     "doctor": SummarySpec(fields=DOCTOR_FIELDS, summarize=_summarize_doctor),
+    "portfolio analyze": SummarySpec(fields=PORTFOLIO_ANALYZE_FIELDS, summarize=_summarize_portfolio_analyze),
 }
 
 

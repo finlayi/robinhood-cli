@@ -73,7 +73,7 @@ def _render_human_data(data: dict[str, Any] | list[Any] | None, meta: dict[str, 
 
 
 def _with_json_meta(envelope: OutputEnvelope, view: str, meta_updates: dict[str, Any] | None) -> OutputEnvelope:
-    envelope.meta.update({"output_schema": "v2", "view": view})
+    envelope.meta.update({"output_schema": "v3", "view": view})
     if meta_updates:
         envelope.meta.update(meta_updates)
     return envelope

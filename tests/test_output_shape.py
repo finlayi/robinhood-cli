@@ -165,3 +165,96 @@ def test_shape_orders_list_preserves_hydrated_symbol():
         limit=None,
     )
     assert shaped[0]["symbol"] == "VOO"
+
+
+def test_shape_quote_list_summary_fields():
+    shaped, meta = shape_data(
+        command="quote list",
+        provider="brokerage",
+        data=[
+            {
+                "symbol": "AAPL",
+                "asset_type": "stock",
+                "provider": "brokerage",
+                "bid_price": "1.0",
+                "ask_price": "1.2",
+                "mark_price": "1.1",
+                "last_trade_price": "1.1",
+                "updated_at": "2026-02-11T00:00:00Z",
+                "error": None,
+            }
+        ],
+        view="summary",
+        fields=None,
+        limit=None,
+    )
+    assert shaped[0]["symbol"] == "AAPL"
+    assert shaped[0]["provider"] == "brokerage"
+    assert shaped[0]["error"] is None
+    assert meta["total_count"] == 1
+
+
+def test_shape_options_expirations_and_strikes_summaries():
+    exp_shaped, _ = shape_data(
+        command="options expirations",
+        provider="brokerage",
+        data={"symbol": "AAPL", "expiration_dates": ["2026-12-18", "2027-01-15"]},
+        view="summary",
+        fields=None,
+        limit=None,
+    )
+    assert exp_shaped["expiration_count"] == 2
+    assert exp_shaped["next_expiration"] == "2026-12-18"
+    assert exp_shaped["last_expiration"] == "2027-01-15"
+
+    strikes_shaped, _ = shape_data(
+        command="options strikes",
+        provider="brokerage",
+        data={"symbol": "AAPL", "expiration_date": "2026-12-18", "option_type": "call", "strikes": [90, 100, 110]},
+        view="summary",
+        fields=None,
+        limit=None,
+    )
+    assert strikes_shaped["strike_count"] == 3
+    assert strikes_shaped["min_strike"] == 90.0
+    assert strikes_shaped["max_strike"] == 110.0
+
+
+def test_shape_option_quote_and_portfolio_analyze():
+    option_shaped, _ = shape_data(
+        command="options quotes get",
+        provider="brokerage",
+        data={
+            "contract_id": "id-1",
+            "symbol": "AAPL",
+            "expiration_date": "2026-12-18",
+            "strike_price": 100.0,
+            "option_type": "call",
+            "bid_price": "1.0",
+            "ask_price": "1.2",
+            "delta": "0.5",
+            "open_interest": "100",
+        },
+        view="summary",
+        fields=None,
+        limit=None,
+    )
+    assert option_shaped["contract_id"] == "id-1"
+    assert option_shaped["delta"] == "0.5"
+
+    portfolio_shaped, _ = shape_data(
+        command="portfolio analyze",
+        provider="brokerage",
+        data={
+            "account": {"equity": 1000},
+            "allocation": [{"symbol": "AAPL"}],
+            "concentration": {"largest_position_pct": 80},
+            "exposure": {"by_asset_type": {"stock": {"market_value": 1000}}},
+            "alerts": [{"code": "TOP3_CONCENTRATION"}],
+            "generated_at": "2026-02-11T00:00:00Z",
+        },
+        view="summary",
+        fields=["account", "alerts"],
+        limit=None,
+    )
+    assert portfolio_shaped == {"account": {"equity": 1000}, "alerts": [{"code": "TOP3_CONCENTRATION"}]}

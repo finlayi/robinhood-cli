@@ -131,6 +131,12 @@ class RobinhoodCryptoProvider:
         )
         return {"symbol": symbol, "quote": data}
 
+    def quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for symbol in symbols:
+            rows.append(self.quote(symbol))
+        return rows
+
     def place_order(self, intent: OrderIntent) -> OrderResult:
         if not isinstance(intent, OrderIntentCrypto):
             raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="Crypto provider only supports crypto orders")

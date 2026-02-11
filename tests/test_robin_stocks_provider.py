@@ -52,7 +52,64 @@ class FakeRH:
 
     def get_quotes(self, symbol):
         self.called.append("get_quotes")
-        return [{"symbol": symbol}]
+        if isinstance(symbol, list):
+            return [{"symbol": item, "bid_price": "1", "ask_price": "2", "last_trade_price": "1.5"} for item in symbol]
+        return [{"symbol": symbol, "bid_price": "1", "ask_price": "2", "last_trade_price": "1.5"}]
+
+    def get_option_instrument_data(self, symbol, expirationDate, strikePrice, optionType):
+        return {
+            "id": "instrument-id",
+            "chain_symbol": symbol,
+            "expiration_date": expirationDate,
+            "strike_price": str(strikePrice),
+            "type": optionType,
+            "tradability": "tradable",
+            "state": "active",
+        }
+
+    def get_option_market_data(self, inputSymbols, expirationDate, strikePrice, optionType):
+        symbol = inputSymbols[0] if isinstance(inputSymbols, list) else inputSymbols
+        return [
+            {
+                "symbol": symbol,
+                "expiration_date": expirationDate,
+                "strike_price": str(strikePrice),
+                "type": optionType,
+                "bid_price": "1.00",
+                "ask_price": "1.10",
+                "mark_price": "1.05",
+                "last_trade_price": "1.02",
+                "implied_volatility": "0.30",
+                "delta": "0.50",
+                "gamma": "0.10",
+                "theta": "-0.02",
+                "vega": "0.03",
+                "rho": "0.01",
+                "open_interest": "100",
+                "volume": "20",
+                "updated_at": "2026-02-11T00:00:00Z",
+            }
+        ]
+
+    def get_option_market_data_by_id(self, id):
+        del id
+        return [
+            {
+                "bid_price": "1.00",
+                "ask_price": "1.10",
+                "mark_price": "1.05",
+                "last_trade_price": "1.02",
+                "implied_volatility": "0.30",
+                "delta": "0.50",
+                "gamma": "0.10",
+                "theta": "-0.02",
+                "vega": "0.03",
+                "rho": "0.01",
+                "open_interest": "100",
+                "volume": "20",
+                "updated_at": "2026-02-11T00:00:00Z",
+            }
+        ]
 
     def get_symbol_by_url(self, url):
         self.symbol_lookup_calls.append(url)
@@ -427,3 +484,86 @@ def test_list_orders_symbol_hydration_is_best_effort(provider):
     rows = p.list_orders(open_only=False, asset_type="stock", symbol_resolve_limit=10)
     assert rows[0].get("symbol") is None
     assert fake_rh.symbol_lookup_calls == [url_one]
+
+
+def test_quotes_batch_path(provider):
+    p, fake_rh = provider
+
+    rows = p.quotes(["AAPL", "MSFT", "BTC-USD"])
+    assert len(rows) == 3
+    assert rows[0]["symbol"] == "AAPL"
+    assert rows[1]["symbol"] == "MSFT"
+    assert rows[2]["asset_type"] == "crypto"
+    assert fake_rh.called.count("get_quotes") == 1
+    assert fake_rh.called.count("get_crypto_quote") == 1
+
+
+def test_option_expirations_and_strikes(provider):
+    p, fake_rh = provider
+    fake_rh.get_chains = lambda symbol: {
+        "symbol": symbol,
+        "expiration_dates": ["2026-12-18", "2027-01-15", "2026-12-18"],
+    }
+    fake_rh.find_options_by_expiration = lambda *args, **kwargs: [
+        {"strike_price": "100.0"},
+        {"strike_price": "90.0"},
+        {"strike_price": "110.0"},
+    ]
+
+    expirations = p.option_expirations("AAPL")
+    strikes = p.option_strikes("AAPL", "2026-12-18", option_type="call")
+
+    assert expirations == ["2026-12-18", "2027-01-15"]
+    assert strikes == [90.0, 100.0, 110.0]
+
+
+def test_option_quote_normalization(provider):
+    p, _ = provider
+    quote = p.option_quote_get("AAPL", "2026-12-18", 100.0, "call")
+
+    assert quote["contract_id"] == "instrument-id"
+    assert quote["symbol"] == "AAPL"
+    assert quote["expiration_date"] == "2026-12-18"
+    assert quote["strike_price"] == 100.0
+    assert quote["option_type"] == "call"
+    assert quote["bid_price"] == "1.00"
+    assert quote["delta"] == "0.50"
+    assert quote["open_interest"] == "100"
+
+
+def test_option_quotes_list_handles_partial_market_data(provider):
+    p, fake_rh = provider
+    fake_rh.find_options_by_expiration = lambda *args, **kwargs: [
+        {
+            "id": "contract-1",
+            "chain_symbol": "AAPL",
+            "expiration_date": "2026-12-18",
+            "strike_price": "100.0",
+            "type": "call",
+            "tradability": "tradable",
+            "state": "active",
+        },
+        {
+            "id": "contract-2",
+            "chain_symbol": "AAPL",
+            "expiration_date": "2026-12-18",
+            "strike_price": "110.0",
+            "type": "call",
+            "tradability": "tradable",
+            "state": "active",
+        },
+    ]
+
+    def market_by_id(contract_id):
+        if contract_id == "contract-1":
+            return [{"bid_price": "1.0", "ask_price": "1.2", "delta": "0.5"}]
+        return [{}]
+
+    fake_rh.get_option_market_data_by_id = market_by_id
+
+    rows = p.option_quotes_list("AAPL", "2026-12-18", option_type="call")
+    assert len(rows) == 2
+    assert rows[0]["contract_id"] == "contract-1"
+    assert rows[0]["bid_price"] == "1.0"
+    assert rows[1]["contract_id"] == "contract-2"
+    assert rows[1]["bid_price"] is None

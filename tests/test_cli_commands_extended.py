@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 import rhx.cli as cli
-from rhx.models import AuthStatus, CapabilitySet
+from rhx.models import AuthStatus, BrokeragePassiveStatus, CapabilitySet
 
 
 class DummyStore:
@@ -24,13 +24,20 @@ class DummyStore:
 class DummyAuthManager:
     crypto_ok = True
 
-    def __init__(self, profile: str, session_dir: Path, suppress_external_output: bool = False):
+    def __init__(
+        self,
+        profile: str,
+        session_dir: Path,
+        suppress_external_output: bool = False,
+        verbose: bool = False,
+    ):
         self.profile = profile
         self.session_dir = session_dir
         self.session_pickle_path = session_dir / f"robinhood_{profile}.pickle"
         self.store = DummyStore()
         self.logged_out = False
         self.suppress_external_output = suppress_external_output
+        self.verbose = verbose
 
     @contextmanager
     def external_output_guard(self):
@@ -42,6 +49,14 @@ class DummyAuthManager:
 
     def brokerage_status(self):
         return AuthStatus(provider="brokerage", authenticated=True, detail="ok")
+
+    def brokerage_passive_status(self):
+        return BrokeragePassiveStatus(
+            session_pickle_exists=True,
+            credentials_present=True,
+            session_ready=True,
+            detail="Session pickle and credentials are available",
+        )
 
     def refresh_brokerage(self, interactive: bool = True):
         del interactive
@@ -85,6 +100,9 @@ class DummyBrokerageProvider:
     def quote(self, symbol: str):
         return {"symbol": symbol}
 
+    def quotes(self, symbols: list[str]):
+        return [self.quote(symbol) for symbol in symbols]
+
     def place_order(self, intent):
         return DummyResult({"id": "ord-1", "asset_type": intent.asset_type, "symbol": intent.symbol})
 
@@ -108,6 +126,40 @@ class DummyBrokerageProvider:
 
     def option_contracts_find(self, symbol: str, expiration_date=None, strike_price=None, option_type=None):
         return [{"symbol": symbol, "expiration_date": expiration_date, "strike": strike_price, "option_type": option_type}]
+
+    def option_expirations(self, symbol: str):
+        return ["2026-12-18"]
+
+    def option_strikes(self, symbol: str, expiration_date: str, option_type: str | None = None):
+        del symbol, expiration_date, option_type
+        return [100.0, 105.0]
+
+    def option_quote_get(self, symbol: str, expiration_date: str, strike_price: float, option_type: str):
+        return {
+            "contract_id": "oid",
+            "symbol": symbol,
+            "expiration_date": expiration_date,
+            "strike_price": strike_price,
+            "option_type": option_type,
+            "bid_price": "1.0",
+            "ask_price": "1.2",
+            "mark_price": "1.1",
+            "last_trade_price": "1.1",
+            "implied_volatility": "0.3",
+            "delta": "0.5",
+            "gamma": "0.1",
+            "theta": "-0.05",
+            "vega": "0.02",
+            "rho": "0.01",
+            "open_interest": "100",
+            "volume": "25",
+            "updated_at": "2026-02-11T00:00:00Z",
+            "tradability": "tradable",
+            "state": "active",
+        }
+
+    def option_quotes_list(self, symbol: str, expiration_date: str, option_type: str | None = None):
+        return [self.option_quote_get(symbol, expiration_date, 100.0, option_type or "call")]
 
 
 class DummyCryptoProvider(DummyBrokerageProvider):
@@ -412,7 +464,7 @@ def test_cli_summary_default_full_and_selectors(monkeypatch: pytest.MonkeyPatch,
     base = ["--json", "--config", str(config_path)]
 
     summary_positions = _payload(runner.invoke(cli.app, base + ["positions", "list"]))
-    assert summary_positions["meta"]["output_schema"] == "v2"
+    assert summary_positions["meta"]["output_schema"] == "v3"
     assert summary_positions["meta"]["view"] == "summary"
     assert summary_positions["data"] == [
         {
@@ -456,14 +508,14 @@ def test_cli_output_selector_validation_and_json_only_enforcement(monkeypatch: p
     assert unknown_fields.exit_code == 2
     unknown_payload = json.loads(unknown_fields.output)
     assert unknown_payload["error"]["code"] == "VALIDATION_ERROR"
-    assert unknown_payload["meta"]["output_schema"] == "v2"
+    assert unknown_payload["meta"]["output_schema"] == "v3"
     assert unknown_payload["meta"]["view"] == "summary"
 
     fields_on_full = runner.invoke(cli.app, base + ["--view", "full", "--fields", "symbol", "positions", "list"])
     assert fields_on_full.exit_code == 2
     fields_on_full_payload = json.loads(fields_on_full.output)
     assert fields_on_full_payload["error"]["code"] == "VALIDATION_ERROR"
-    assert fields_on_full_payload["meta"]["output_schema"] == "v2"
+    assert fields_on_full_payload["meta"]["output_schema"] == "v3"
     assert fields_on_full_payload["meta"]["view"] == "full"
 
     no_json_view = runner.invoke(cli.app, ["--config", str(config_path), "--view", "full", "positions", "list"])
@@ -526,4 +578,316 @@ def test_cli_human_and_json_are_mutually_exclusive(monkeypatch: pytest.MonkeyPat
     payload = json.loads(result.output)
     assert payload["error"]["code"] == "VALIDATION_ERROR"
     assert "--human cannot be used with --json" in payload["error"]["message"]
-    assert payload["meta"]["output_schema"] == "v2"
+    assert payload["meta"]["output_schema"] == "v3"
+
+
+def test_cli_auth_status_is_passive_and_verify_is_active(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    class TrackingAuth(DummyAuthManager):
+        passive_calls = 0
+        active_calls = 0
+
+        def brokerage_passive_status(self):
+            self.__class__.passive_calls += 1
+            return super().brokerage_passive_status()
+
+        def brokerage_status(self):
+            self.__class__.active_calls += 1
+            return super().brokerage_status()
+
+    monkeypatch.setattr(cli, "AuthManager", TrackingAuth)
+    monkeypatch.setattr(cli, "RobinStocksProvider", DummyBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    status_payload = _payload(runner.invoke(cli.app, base + ["auth", "status"]))
+    verify_payload = _payload(runner.invoke(cli.app, base + ["auth", "verify"]))
+
+    assert status_payload["command"] == "auth status"
+    assert verify_payload["command"] == "auth verify"
+    assert TrackingAuth.passive_calls == 1
+    assert TrackingAuth.active_calls == 1
+
+
+def test_cli_quote_list_strict_and_non_strict_modes(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    class PartialQuoteProvider(DummyBrokerageProvider):
+        def quotes(self, symbols: list[str]):
+            first = symbols[0]
+            return [
+                {
+                    "asset_type": "stock",
+                    "symbol": first,
+                    "quote": {"bid_price": "10.0", "ask_price": "10.1", "last_trade_price": "10.05"},
+                }
+            ]
+
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", PartialQuoteProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    non_strict = _payload(runner.invoke(cli.app, base + ["quote", "list", "--symbols", "AAPL,MSFT"]))
+    assert len(non_strict["data"]) == 2
+    assert non_strict["data"][0]["symbol"] == "AAPL"
+    assert non_strict["data"][0]["error"] is None
+    assert non_strict["data"][1]["symbol"] == "MSFT"
+    assert "No quote returned" in non_strict["data"][1]["error"]
+
+    strict = runner.invoke(cli.app, base + ["quote", "list", "--symbols", "AAPL,MSFT", "--strict"])
+    assert strict.exit_code != 0
+    strict_payload = json.loads(strict.output)
+    assert strict_payload["error"]["code"] == "BROKER_REJECTED"
+
+
+def test_cli_options_discovery_and_quotes_filters(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    class OptionDataProvider(DummyBrokerageProvider):
+        def option_expirations(self, symbol: str):
+            assert symbol == "AAPL"
+            return ["2026-12-18", "2027-01-15"]
+
+        def option_strikes(self, symbol: str, expiration_date: str, option_type: str | None = None):
+            assert symbol == "AAPL"
+            assert expiration_date == "2026-12-18"
+            assert option_type == "call"
+            return [90.0, 100.0, 110.0]
+
+        def option_quote_get(self, symbol: str, expiration_date: str, strike_price: float, option_type: str):
+            return {
+                "contract_id": "contract-1",
+                "symbol": symbol,
+                "expiration_date": expiration_date,
+                "strike_price": strike_price,
+                "option_type": option_type,
+                "bid_price": "1.00",
+                "ask_price": "1.10",
+                "mark_price": "1.05",
+                "last_trade_price": "1.02",
+                "implied_volatility": "0.30",
+                "delta": "0.55",
+                "gamma": "0.11",
+                "theta": "-0.03",
+                "vega": "0.04",
+                "rho": "0.01",
+                "open_interest": "120",
+                "volume": "30",
+                "updated_at": "2026-02-11T00:00:00Z",
+                "tradability": "tradable",
+                "state": "active",
+            }
+
+        def option_quotes_list(self, symbol: str, expiration_date: str, option_type: str | None = None):
+            return [
+                self.option_quote_get(symbol, expiration_date, 100.0, option_type or "call"),
+                {
+                    "contract_id": "contract-2",
+                    "symbol": symbol,
+                    "expiration_date": expiration_date,
+                    "strike_price": 110.0,
+                    "option_type": option_type or "call",
+                    "bid_price": "0.50",
+                    "ask_price": "0.60",
+                    "mark_price": "0.55",
+                    "last_trade_price": "0.52",
+                    "implied_volatility": "0.20",
+                    "delta": "0.25",
+                    "gamma": "0.08",
+                    "theta": "-0.02",
+                    "vega": "0.02",
+                    "rho": "0.00",
+                    "open_interest": "5",
+                    "volume": "2",
+                    "updated_at": "2026-02-11T00:00:00Z",
+                    "tradability": "tradable",
+                    "state": "active",
+                },
+            ]
+
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", OptionDataProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    expirations = _payload(runner.invoke(cli.app, base + ["options", "expirations", "AAPL"]))
+    assert expirations["data"]["expiration_count"] == 2
+
+    strikes = _payload(
+        runner.invoke(
+            cli.app,
+            base + ["options", "strikes", "AAPL", "--expiration-date", "2026-12-18", "--option-type", "call"],
+        )
+    )
+    assert strikes["data"]["strike_count"] == 3
+
+    quote_get = _payload(
+        runner.invoke(
+            cli.app,
+            base
+            + [
+                "options",
+                "quotes",
+                "get",
+                "--symbol",
+                "AAPL",
+                "--expiration-date",
+                "2026-12-18",
+                "--strike",
+                "100",
+                "--option-type",
+                "call",
+            ],
+        )
+    )
+    assert quote_get["data"]["contract_id"] == "contract-1"
+
+    quote_list = _payload(
+        runner.invoke(
+            cli.app,
+            base
+            + [
+                "options",
+                "quotes",
+                "list",
+                "--symbol",
+                "AAPL",
+                "--expiration-date",
+                "2026-12-18",
+                "--option-type",
+                "call",
+                "--min-oi",
+                "10",
+                "--delta-min",
+                "0.4",
+                "--sort",
+                "delta",
+                "--descending",
+                "--query-limit",
+                "1",
+                "--offset",
+                "0",
+            ],
+        )
+    )
+    assert len(quote_list["data"]) == 1
+    assert quote_list["meta"]["query_total_count"] == 1
+    assert quote_list["meta"]["query_returned_count"] == 1
+    assert quote_list["data"][0]["contract_id"] == "contract-1"
+
+
+def test_cli_options_orders_list_filters_and_query_pagination(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    class OptionOrdersProvider(DummyBrokerageProvider):
+        def list_orders(self, open_only: bool = False, asset_type: str | None = None, symbol_resolve_limit: int | None = None):
+            del open_only, asset_type, symbol_resolve_limit
+            return [
+                {
+                    "id": "1",
+                    "chain_symbol": "AAPL",
+                    "state": "filled",
+                    "strategy": "long_call",
+                    "created_at": "2026-02-01T12:00:00Z",
+                    "updated_at": "2026-02-02T12:00:00Z",
+                },
+                {
+                    "id": "2",
+                    "chain_symbol": "AAPL",
+                    "state": "filled",
+                    "strategy": "long_call",
+                    "created_at": "2026-02-03T12:00:00Z",
+                    "updated_at": "2026-02-04T12:00:00Z",
+                },
+            ]
+
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", OptionOrdersProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    payload = _payload(
+        runner.invoke(
+            cli.app,
+            base
+            + [
+                "options",
+                "orders",
+                "list",
+                "--symbol",
+                "AAPL",
+                "--state",
+                "filled",
+                "--strategy",
+                "long_call",
+                "--from-date",
+                "2026-02-01",
+                "--to-date",
+                "2026-02-28",
+                "--sort",
+                "updated_at",
+                "--descending",
+                "--query-limit",
+                "1",
+                "--offset",
+                "1",
+            ],
+        )
+    )
+    assert len(payload["data"]) == 1
+    assert payload["meta"]["query_total_count"] == 2
+    assert payload["meta"]["query_returned_count"] == 1
+    assert payload["meta"]["query_offset"] == 1
+
+
+def test_cli_portfolio_analyze_outputs_risk_sections(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    class PortfolioProvider(DummyBrokerageProvider):
+        def account_summary(self):
+            return {
+                "account_profile": {
+                    "cash": "-20",
+                    "buying_power": "500",
+                    "margin_balances": {"settled_amount_borrowed": "100"},
+                    "cash_available_for_withdrawal": "200",
+                },
+                "portfolio_profile": {"equity": "1200", "market_value": "1200", "withdrawable_amount": "200"},
+            }
+
+        def positions(self):
+            return [
+                {"asset_type": "stock", "symbol": "AAPL", "quantity": "10", "clearing_cost_basis": "700"},
+                {"asset_type": "stock", "symbol": "MSFT", "quantity": "1", "clearing_cost_basis": "200"},
+            ]
+
+        def quotes(self, symbols: list[str]):
+            rows = []
+            for symbol in symbols:
+                if symbol == "AAPL":
+                    rows.append({"asset_type": "stock", "symbol": "AAPL", "quote": {"last_trade_price": "100"}})
+                elif symbol == "MSFT":
+                    rows.append({"asset_type": "stock", "symbol": "MSFT", "quote": {"last_trade_price": "200"}})
+            return rows
+
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", PortfolioProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    payload = _payload(runner.invoke(cli.app, base + ["portfolio", "analyze", "--top", "2"]))
+    assert "account" in payload["data"]
+    assert "concentration" in payload["data"]
+    assert "exposure" in payload["data"]
+    assert "alerts" in payload["data"]
+    assert len(payload["data"]["allocation"]) == 2
+    alert_codes = {alert["code"] for alert in payload["data"]["alerts"]}
+    assert "LARGEST_POSITION_CONCENTRATION" in alert_codes
+    assert "NEGATIVE_CASH" in alert_codes
