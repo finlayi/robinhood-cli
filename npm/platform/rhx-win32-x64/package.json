@@ -21,7 +21,7 @@
     "rhx-native": "bin/rhx.exe"
   },
   "files": [
-    "bin/rhx.exe",
+    "bin",
     "README.md"
   ]
 }
