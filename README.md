@@ -38,9 +38,19 @@ On supported platforms (`darwin-arm64`, `linux-x64`, `win32-x64`), `npx rhx` use
 
 ```bash
 rhx auth login
-rhx auth status
+rhx auth status   # passive/local state only (no network check)
+rhx auth verify   # active API verification
 ```
 
+- `auth status` returns passive brokerage status fields:
+  - `session_pickle_exists`
+  - `credentials_present`
+  - `session_ready`
+  - `detail`
+- `auth verify` returns active auth check fields:
+  - `authenticated`
+  - `mfa_required`
+  - `detail`
 - Session file: `~/.config/robinhood-cli/sessions/robinhood_<profile>.pickle`
 - Credentials: stored in OS keychain (fallback to `RH_USERNAME`/`RH_PASSWORD` env vars)
 
@@ -54,7 +64,7 @@ Set either env vars or keychain values:
 Then verify:
 
 ```bash
-rhx auth status
+rhx auth verify
 rhx doctor
 ```
 
@@ -82,6 +92,12 @@ rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --l
 # Machine-readable output
 rhx --json quote get AAPL
 
+# Batch quotes (non-strict: per-symbol errors in `error` field)
+rhx --json quote list --symbols AAPL,MSFT,BTC-USD
+
+# Batch quotes strict mode (fails command if any quote fails)
+rhx --json quote list --symbols AAPL,MSFT --strict
+
 # Compact human-readable output
 rhx --human quote get AAPL
 
@@ -93,6 +109,41 @@ rhx --json --fields symbol,quantity positions list
 
 # Limit list payload size
 rhx --json --limit 10 orders list
+
+# Option chain discovery
+rhx --json options expirations AAPL
+rhx --json options strikes AAPL --expiration-date 2026-12-18 --option-type both
+
+# Single option contract quote
+rhx --json options quotes get --symbol AAPL --expiration-date 2026-12-18 --strike 200 --option-type call
+
+# Option chain quote scan with filters/sort/query pagination
+rhx --json options quotes list \
+  --symbol AAPL \
+  --expiration-date 2026-12-18 \
+  --option-type both \
+  --delta-min 0.20 \
+  --delta-max 0.60 \
+  --min-oi 100 \
+  --sort open_interest \
+  --descending \
+  --query-limit 25 \
+  --offset 0
+
+# Option order history filtering + pagination
+rhx --json options orders list \
+  --symbol AAPL \
+  --state filled \
+  --strategy call \
+  --from-date 2025-01-01 \
+  --to-date 2026-02-11 \
+  --sort created_at \
+  --descending \
+  --query-limit 100 \
+  --offset 0
+
+# Portfolio concentration/risk analytics
+rhx --json portfolio analyze --top 10
 
 # Stock order (brokerage)
 TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
@@ -126,21 +177,32 @@ Every command returns:
   "error": null,
   "meta": {
     "timestamp": "2026-02-09T00:00:00Z",
-    "output_schema": "v2",
-    "view": "summary"
+    "output_schema": "v3",
+    "view": "summary",
+    "query_total_count": 50,
+    "query_returned_count": 25,
+    "query_truncated": true,
+    "query_offset": 0
   }
 }
 ```
 
-### v0.2.0 migration note
+`query_*` metadata appears on commands that support query-time filtering/pagination.
 
-- `--json` now defaults to `--view summary` for compact payloads.
-- Use `--json --view full` for raw/legacy provider payloads.
-- `--fields` and `--limit` are available for additional output trimming.
-- `--view`, `--fields`, and `--limit` require `--json`.
-- `--human` provides compact non-JSON text output and cannot be combined with `--json`.
-- `--json` output is strict machine-readable stdout: upstream brokerage progress logs/spinners are suppressed.
-- `orders list` now performs bounded best-effort stock symbol hydration from instrument URLs (up to 200 rows, or `--limit` rows when lower).
+### v0.3.0 migration note
+
+- `auth status` is now passive and side-effect free.
+- `auth verify` is new and performs active API auth checks.
+- JSON schema marker moved from `v2` to `v3`.
+- `quote list --symbols ... [--strict]` is available for batch quote retrieval.
+- New options market-data commands:
+  - `options expirations`
+  - `options strikes`
+  - `options quotes get`
+  - `options quotes list` with filter/sort/query pagination
+- `options orders list` now supports in-command filtering/sorting/query pagination (`--query-limit`, `--offset`).
+- `portfolio analyze` adds first-party concentration/exposure/risk analytics.
+- Keyring persistence warnings are suppressed unless `--verbose` is enabled.
 
 On failure, `ok=false` and `error.code` is one of:
 

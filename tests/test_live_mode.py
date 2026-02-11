@@ -95,7 +95,7 @@ def test_live_toggle_and_guardrail(monkeypatch, tmp_path):
     assert blocked.exit_code == 6
     blocked_payload = json.loads(blocked.output)
     assert blocked_payload["error"]["code"] == "LIVE_MODE_OFF"
-    assert blocked_payload["meta"]["output_schema"] == "v2"
+    assert blocked_payload["meta"]["output_schema"] == "v3"
     assert blocked_payload["meta"]["view"] == "summary"
 
     enabled = runner.invoke(cli.app, ["--json", "--config", str(config_path), "live", "on", "--yes"])
@@ -131,7 +131,7 @@ def test_live_toggle_and_guardrail(monkeypatch, tmp_path):
     assert blocked_without_token.exit_code == 6
     blocked_without_token_payload = json.loads(blocked_without_token.output)
     assert blocked_without_token_payload["error"]["code"] == "SAFETY_POLICY_BLOCK"
-    assert blocked_without_token_payload["meta"]["output_schema"] == "v2"
+    assert blocked_without_token_payload["meta"]["output_schema"] == "v3"
     assert blocked_without_token_payload["meta"]["view"] == "summary"
 
     allowed_with_token = runner.invoke(

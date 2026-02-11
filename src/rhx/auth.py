@@ -15,7 +15,7 @@ import keyring
 from keyring.errors import KeyringError
 
 from rhx.errors import CLIError, ErrorCode
-from rhx.models import AuthStatus
+from rhx.models import AuthStatus, BrokeragePassiveStatus
 
 
 BROKERAGE_SERVICE = "rhx.robinhood.brokerage"
@@ -75,6 +75,7 @@ class AuthManager:
         session_dir: Path,
         store: CredentialStore | None = None,
         suppress_external_output: bool = False,
+        verbose: bool = False,
     ) -> None:
         self.profile = profile
         self.session_dir = session_dir
@@ -82,6 +83,7 @@ class AuthManager:
         self._secure_dir(self.session_dir)
         self.store = store or CredentialStore()
         self.suppress_external_output = suppress_external_output
+        self.verbose = verbose
 
     @property
     def session_pickle_path(self) -> Path:
@@ -355,7 +357,10 @@ class AuthManager:
                 self.store.set_robinhood_credentials(self.profile, username, password)
             except Exception as exc:
                 # Credentials remain available through env vars.
-                logger.warning("Failed to persist Robinhood credentials in keyring: %s", exc)
+                if self.verbose:
+                    logger.warning("Failed to persist Robinhood credentials in keyring: %s", exc)
+                else:
+                    logger.debug("Failed to persist Robinhood credentials in keyring: %s", exc)
 
             self._secure_session_pickle(ensure_exists=False)
 
@@ -398,6 +403,32 @@ class AuthManager:
                 mfa_required=False,
                 detail=exc.message,
             )
+
+    def brokerage_passive_status(self) -> BrokeragePassiveStatus:
+        session_pickle_exists = self.session_pickle_path.exists()
+        if session_pickle_exists and self.session_pickle_path.is_symlink():
+            session_pickle_exists = False
+            detail = "Session pickle path is symlinked and invalid"
+        else:
+            detail = "No brokerage session or credentials detected"
+
+        username, password = self._resolve_brokerage_credentials()
+        credentials_present = bool(username and password)
+        session_ready = bool(session_pickle_exists or credentials_present)
+
+        if session_pickle_exists and credentials_present:
+            detail = "Session pickle and credentials are available"
+        elif session_pickle_exists:
+            detail = "Session pickle is available"
+        elif credentials_present:
+            detail = "Credentials are available"
+
+        return BrokeragePassiveStatus(
+            session_pickle_exists=session_pickle_exists,
+            credentials_present=credentials_present,
+            session_ready=session_ready,
+            detail=detail,
+        )
 
     def refresh_brokerage(self, interactive: bool = True) -> AuthStatus:
         return self.ensure_brokerage_authenticated(interactive=interactive, force=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,8 @@ options_app = typer.Typer(no_args_is_help=True)
 options_contracts_app = typer.Typer(no_args_is_help=True)
 options_orders_app = typer.Typer(no_args_is_help=True)
 options_orders_place_app = typer.Typer(no_args_is_help=True)
+options_quotes_app = typer.Typer(no_args_is_help=True)
+portfolio_app = typer.Typer(no_args_is_help=True)
 
 app.add_typer(auth_app, name="auth")
 app.add_typer(live_app, name="live")
@@ -56,6 +59,8 @@ app.add_typer(options_app, name="options")
 options_app.add_typer(options_contracts_app, name="contracts")
 options_app.add_typer(options_orders_app, name="orders")
 options_orders_app.add_typer(options_orders_place_app, name="place")
+options_app.add_typer(options_quotes_app, name="quotes")
+app.add_typer(portfolio_app, name="portfolio")
 
 
 @dataclass
@@ -71,6 +76,12 @@ class AppRuntime:
     safety: SafetyEngine
     brokerage_provider: RobinStocksProvider
     crypto_provider: RobinhoodCryptoProvider
+
+
+@dataclass
+class CommandOutput:
+    data: Any
+    meta_updates: dict[str, Any] | None = None
 
 
 def _serialize(data: Any) -> Any:
@@ -93,7 +104,7 @@ def _runtime(ctx: typer.Context) -> AppRuntime:
 def _json_meta(runtime: AppRuntime) -> dict[str, Any] | None:
     if not runtime.json_mode:
         return None
-    return {"output_schema": "v2", "view": runtime.view}
+    return {"output_schema": "v3", "view": runtime.view}
 
 
 def _parse_fields(fields: str | None) -> list[str] | None:
@@ -111,6 +122,77 @@ def _parse_fields(fields: str | None) -> list[str] | None:
     if not parsed:
         raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--fields requires at least one field name")
     return parsed
+
+
+def _parse_symbols(symbols: str) -> list[str]:
+    parsed: list[str] = []
+    for raw in symbols.split(","):
+        symbol = raw.strip()
+        if not symbol:
+            continue
+        if symbol not in parsed:
+            parsed.append(symbol)
+    if not parsed:
+        raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--symbols requires at least one symbol")
+    return parsed
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _parse_yyyy_mm_dd(value: str, *, arg_name: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise CLIError(
+            code=ErrorCode.VALIDATION_ERROR,
+            message=f"{arg_name} must be in YYYY-MM-DD format",
+        ) from exc
+
+
+def _query_meta(*, total_count: int, returned_count: int, offset: int = 0) -> dict[str, Any]:
+    return {
+        "query_total_count": total_count,
+        "query_returned_count": returned_count,
+        "query_truncated": returned_count < total_count,
+        "query_offset": offset,
+    }
+
+
+def _flatten_quote_payload(row: dict[str, Any], *, provider: str) -> dict[str, Any]:
+    quote = row.get("quote")
+    quote_payload = quote if isinstance(quote, dict) else {}
+    return {
+        "symbol": row.get("symbol"),
+        "asset_type": row.get("asset_type"),
+        "provider": provider,
+        "bid_price": quote_payload.get("bid_price") or quote_payload.get("bid"),
+        "ask_price": quote_payload.get("ask_price") or quote_payload.get("ask"),
+        "mark_price": quote_payload.get("mark_price") or quote_payload.get("mark"),
+        "last_trade_price": quote_payload.get("last_trade_price") or quote_payload.get("price"),
+        "updated_at": quote_payload.get("updated_at"),
+        "error": row.get("error"),
+    }
 
 
 def _is_from_cli(ctx: typer.Context, parameter_name: str) -> bool:
@@ -147,10 +229,17 @@ def _run_command(
 ) -> None:
     runtime = _runtime(ctx)
     try:
-        payload = _serialize(func())
-        meta_updates: dict[str, Any] | None = None
+        raw_result = func()
+        extra_meta: dict[str, Any] | None = None
+        if isinstance(raw_result, CommandOutput):
+            payload = _serialize(raw_result.data)
+            extra_meta = raw_result.meta_updates
+        else:
+            payload = _serialize(raw_result)
+
+        meta_updates: dict[str, Any] | None = extra_meta
         if runtime.json_mode:
-            payload, meta_updates = shape_data(
+            payload, shape_meta = shape_data(
                 command=command,
                 provider=provider,
                 data=payload,
@@ -158,6 +247,11 @@ def _run_command(
                 fields=runtime.fields,
                 limit=runtime.limit,
             )
+            combined_meta: dict[str, Any] = {}
+            if extra_meta:
+                combined_meta.update(extra_meta)
+            combined_meta.update(shape_meta)
+            meta_updates = combined_meta
         emit_success(
             command,
             payload,
@@ -194,7 +288,6 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose logs"),
     no_color: bool = typer.Option(False, "--no-color", help="Disable color output"),
 ) -> None:
-    del verbose
     del no_color
 
     view_normalized = view.lower().strip()
@@ -207,7 +300,7 @@ def main(
             "global options",
             json_output,
             provider=None,
-            meta_updates={"output_schema": "v2", "view": view_normalized or "summary"},
+            meta_updates={"output_schema": "v3", "view": view_normalized or "summary"},
             view=view_normalized or "summary",
         )
         raise typer.Exit(err.exit_code)
@@ -219,7 +312,7 @@ def main(
             "global options",
             json_output,
             provider=None,
-            meta_updates={"output_schema": "v2", "view": view_normalized},
+            meta_updates={"output_schema": "v3", "view": view_normalized},
             view=view_normalized,
         )
         raise typer.Exit(err.exit_code)
@@ -231,7 +324,7 @@ def main(
             "global options",
             json_output,
             provider=None,
-            meta_updates={"output_schema": "v2", "view": view_normalized},
+            meta_updates={"output_schema": "v3", "view": view_normalized},
             view=view_normalized,
         )
         raise typer.Exit(err.exit_code)
@@ -249,7 +342,7 @@ def main(
             "global options",
             json_output,
             provider=None,
-            meta_updates={"output_schema": "v2", "view": view_normalized},
+            meta_updates={"output_schema": "v3", "view": view_normalized},
             view=view_normalized,
         )
         raise typer.Exit(err.exit_code)
@@ -259,6 +352,7 @@ def main(
         profile=profile,
         session_dir=runtime_cfg.paths.session_dir,
         suppress_external_output=json_output,
+        verbose=verbose,
     )
     safety = SafetyEngine(db_path=runtime_cfg.paths.state_db_path, config=runtime_cfg.app.safety)
 
@@ -301,6 +395,21 @@ def auth_status(ctx: typer.Context) -> None:
     runtime = _runtime(ctx)
 
     def _do():
+        brokerage = runtime.auth.brokerage_passive_status()
+        crypto = runtime.auth.crypto_status()
+        return {
+            "brokerage": brokerage.model_dump(mode="python"),
+            "crypto": crypto.model_dump(mode="python"),
+        }
+
+    _run_command(ctx, "auth status", _do)
+
+
+@auth_app.command("verify")
+def auth_verify(ctx: typer.Context) -> None:
+    runtime = _runtime(ctx)
+
+    def _do():
         brokerage = runtime.auth.brokerage_status()
         crypto = runtime.crypto_provider.auth_status()
         return {
@@ -308,7 +417,7 @@ def auth_status(ctx: typer.Context) -> None:
             "crypto": crypto.model_dump(mode="python"),
         }
 
-    _run_command(ctx, "auth status", _do)
+    _run_command(ctx, "auth verify", _do)
 
 
 @auth_app.command("refresh")
@@ -440,6 +549,306 @@ def quote_get(ctx: typer.Context, symbol: str = typer.Argument(...)) -> None:
         return provider.quote(symbol)
 
     _run_command(ctx, "quote get", _do, provider=provider.name)
+
+
+@quote_app.command("list")
+def quote_list(
+    ctx: typer.Context,
+    symbols: str = typer.Option(..., "--symbols", help="Comma-separated symbol list"),
+    strict: bool = typer.Option(False, "--strict", help="Fail command when any symbol quote fails"),
+) -> None:
+    runtime = _runtime(ctx)
+    requested = _parse_symbols(symbols)
+
+    def _do():
+        by_provider: dict[str, list[str]] = {}
+        provider_lookup: dict[str, Any] = {}
+
+        if runtime.provider_choice == "auto":
+            for symbol in requested:
+                provider = _resolve_provider(runtime, symbol=symbol)
+                provider_lookup[symbol] = provider
+                by_provider.setdefault(provider.name, []).append(symbol)
+        else:
+            provider = _resolve_provider(runtime)
+            for symbol in requested:
+                provider_lookup[symbol] = provider
+            by_provider[provider.name] = requested[:]
+
+        rows_by_symbol: dict[str, dict[str, Any]] = {}
+        errors: list[str] = []
+
+        for provider_name, provider_symbols in by_provider.items():
+            provider = provider_lookup[provider_symbols[0]]
+            try:
+                provider_rows = provider.quotes(provider_symbols)
+            except Exception as exc:
+                if strict:
+                    raise
+                for symbol in provider_symbols:
+                    rows_by_symbol[symbol] = {
+                        "symbol": symbol,
+                        "asset_type": "crypto" if _is_crypto_symbol(symbol) else "stock",
+                        "provider": provider_name,
+                        "bid_price": None,
+                        "ask_price": None,
+                        "mark_price": None,
+                        "last_trade_price": None,
+                        "updated_at": None,
+                        "error": str(exc),
+                    }
+                    errors.append(symbol)
+                continue
+
+            provider_rows = provider_rows if isinstance(provider_rows, list) else []
+            normalized_rows: dict[str, dict[str, Any]] = {}
+            for row in provider_rows:
+                if not isinstance(row, dict):
+                    continue
+                symbol = row.get("symbol")
+                if isinstance(symbol, str) and symbol:
+                    normalized_rows[symbol.upper()] = _flatten_quote_payload(row, provider=provider_name)
+
+            for symbol in provider_symbols:
+                flattened = normalized_rows.get(symbol.upper())
+                if flattened is None:
+                    message = f"No quote returned for {symbol}"
+                    if strict:
+                        raise CLIError(code=ErrorCode.BROKER_REJECTED, message=message)
+                    flattened = {
+                        "symbol": symbol,
+                        "asset_type": "crypto" if _is_crypto_symbol(symbol) else "stock",
+                        "provider": provider_name,
+                        "bid_price": None,
+                        "ask_price": None,
+                        "mark_price": None,
+                        "last_trade_price": None,
+                        "updated_at": None,
+                        "error": message,
+                    }
+                    errors.append(symbol)
+                rows_by_symbol[symbol] = flattened
+
+        if strict and errors:
+            raise CLIError(
+                code=ErrorCode.BROKER_REJECTED,
+                message=f"Quote retrieval failed for symbols: {', '.join(errors)}",
+            )
+
+        ordered_rows = [rows_by_symbol[symbol] for symbol in requested if symbol in rows_by_symbol]
+        return ordered_rows
+
+    _run_command(ctx, "quote list", _do, provider=runtime.provider_choice)
+
+
+@portfolio_app.command("analyze")
+def portfolio_analyze(
+    ctx: typer.Context,
+    top: int = typer.Option(10, "--top"),
+    include_holdings: bool = typer.Option(True, "--include-holdings/--no-include-holdings"),
+) -> None:
+    runtime = _runtime(ctx)
+
+    def _do():
+        if top < 1:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--top must be >= 1")
+
+        summary = runtime.brokerage_provider.account_summary()
+        positions = runtime.brokerage_provider.positions()
+
+        quote_symbols: list[str] = []
+        symbol_to_quote_symbol: dict[str, str] = {}
+
+        for row in positions:
+            if not isinstance(row, dict):
+                continue
+            asset_type = str(row.get("asset_type") or "").lower()
+            if asset_type not in {"stock", "crypto"}:
+                continue
+            symbol = row.get("symbol")
+            if not symbol and isinstance(row.get("currency"), dict):
+                symbol = row["currency"].get("code") or row["currency"].get("display_code")
+            if not isinstance(symbol, str) or not symbol:
+                continue
+            quote_symbol = symbol if asset_type == "stock" or "-" in symbol else f"{symbol}-USD"
+            symbol_to_quote_symbol[symbol] = quote_symbol
+            if quote_symbol not in quote_symbols:
+                quote_symbols.append(quote_symbol)
+
+        quote_rows = runtime.brokerage_provider.quotes(quote_symbols)
+        quote_by_symbol: dict[str, dict[str, Any]] = {}
+        for row in quote_rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = row.get("symbol")
+            if isinstance(symbol, str) and symbol:
+                quote_by_symbol[symbol.upper()] = row
+
+        account_profile = summary.get("account_profile", {}) if isinstance(summary, dict) else {}
+        portfolio_profile = summary.get("portfolio_profile", {}) if isinstance(summary, dict) else {}
+        margin_balances = account_profile.get("margin_balances", {}) if isinstance(account_profile, dict) else {}
+
+        equity = _safe_float(portfolio_profile.get("equity"))
+        market_value = _safe_float(portfolio_profile.get("market_value"))
+        cash = _safe_float(account_profile.get("cash"))
+        buying_power = _safe_float(account_profile.get("buying_power"))
+        withdrawable = _safe_float(
+            portfolio_profile.get("withdrawable_amount") or account_profile.get("cash_available_for_withdrawal")
+        )
+        margin_debit = _safe_float(margin_balances.get("settled_amount_borrowed"))
+
+        holdings_all: list[dict[str, Any]] = []
+        for row in positions:
+            if not isinstance(row, dict):
+                continue
+            asset_type = str(row.get("asset_type") or "").lower()
+            if asset_type not in {"stock", "crypto"}:
+                continue
+
+            symbol = row.get("symbol")
+            if not symbol and isinstance(row.get("currency"), dict):
+                symbol = row["currency"].get("code") or row["currency"].get("display_code")
+            if not isinstance(symbol, str) or not symbol:
+                continue
+
+            quantity = _safe_float(row.get("quantity")) or _safe_float(row.get("quantity_available")) or 0.0
+            quote_symbol = symbol_to_quote_symbol.get(symbol, symbol)
+            quote_row = quote_by_symbol.get(quote_symbol.upper(), {})
+            quote_payload = quote_row.get("quote") if isinstance(quote_row, dict) else {}
+            quote_payload = quote_payload if isinstance(quote_payload, dict) else {}
+
+            last_price = _safe_float(
+                quote_payload.get("last_trade_price")
+                or quote_payload.get("mark_price")
+                or quote_payload.get("price")
+                or quote_payload.get("bid_price")
+                or quote_payload.get("ask_price")
+            )
+
+            computed_market_value = quantity * last_price if last_price is not None else None
+            cost_basis = _safe_float(row.get("clearing_cost_basis")) or _safe_float(row.get("cost_basis"))
+            if cost_basis is None:
+                avg_buy = _safe_float(row.get("average_buy_price"))
+                if avg_buy is not None and quantity:
+                    cost_basis = avg_buy * quantity
+            if cost_basis is None and isinstance(row.get("tax_lot_cost_bases"), list) and row["tax_lot_cost_bases"]:
+                cost_basis = _safe_float(row["tax_lot_cost_bases"][0].get("clearing_book_cost_basis"))
+            if cost_basis is None and isinstance(row.get("cost_bases"), list) and row["cost_bases"]:
+                cost_basis = _safe_float(row["cost_bases"][0].get("direct_cost_basis"))
+
+            if computed_market_value is None:
+                computed_market_value = _safe_float(row.get("market_value"))
+
+            unrealized = None
+            unrealized_pct = None
+            if computed_market_value is not None and cost_basis is not None:
+                unrealized = computed_market_value - cost_basis
+                if cost_basis:
+                    unrealized_pct = (unrealized / cost_basis) * 100.0
+
+            holdings_all.append(
+                {
+                    "symbol": symbol,
+                    "asset_type": asset_type,
+                    "quantity": quantity,
+                    "last_price": last_price,
+                    "market_value": computed_market_value,
+                    "weight_pct": None,
+                    "cost_basis": cost_basis,
+                    "unrealized_pnl": unrealized,
+                    "unrealized_pnl_pct": unrealized_pct,
+                }
+            )
+
+        holdings_all.sort(key=lambda row: row.get("market_value") or 0.0, reverse=True)
+
+        holdings_total_market = sum((row.get("market_value") or 0.0) for row in holdings_all)
+        denominator = equity if equity and equity > 0 else holdings_total_market
+        if denominator <= 0:
+            denominator = holdings_total_market
+
+        if denominator > 0:
+            for row in holdings_all:
+                market_val = row.get("market_value")
+                if market_val is not None:
+                    row["weight_pct"] = (market_val / denominator) * 100.0
+
+        top3_pct = 0.0
+        top5_pct = 0.0
+        largest_position_pct = 0.0
+        herfindahl_index = 0.0
+        if denominator > 0:
+            shares = [(row.get("market_value") or 0.0) / denominator for row in holdings_all]
+            if shares:
+                largest_position_pct = max(shares) * 100.0
+                top3_pct = sum(shares[:3]) * 100.0
+                top5_pct = sum(shares[:5]) * 100.0
+                herfindahl_index = sum((share * 100.0) ** 2 for share in shares)
+
+        exposure_totals: dict[str, float] = {}
+        for row in holdings_all:
+            asset_type = row.get("asset_type") or "unknown"
+            exposure_totals[asset_type] = exposure_totals.get(asset_type, 0.0) + (row.get("market_value") or 0.0)
+
+        exposure: dict[str, Any] = {"by_asset_type": {}, "cash": {"value": cash, "weight_pct": None}}
+        for asset_type, total_value in sorted(exposure_totals.items()):
+            exposure["by_asset_type"][asset_type] = {
+                "market_value": total_value,
+                "weight_pct": (total_value / denominator) * 100.0 if denominator > 0 else None,
+            }
+        if cash is not None and denominator > 0:
+            exposure["cash"]["weight_pct"] = (cash / denominator) * 100.0
+
+        alerts: list[dict[str, Any]] = []
+        if largest_position_pct > 35.0:
+            alerts.append(
+                {
+                    "code": "LARGEST_POSITION_CONCENTRATION",
+                    "value": largest_position_pct,
+                    "message": "Largest position exceeds 35% of portfolio value",
+                }
+            )
+        if top3_pct > 70.0:
+            alerts.append(
+                {
+                    "code": "TOP3_CONCENTRATION",
+                    "value": top3_pct,
+                    "message": "Top 3 positions exceed 70% of portfolio value",
+                }
+            )
+        if cash is not None and cash < 0:
+            alerts.append(
+                {
+                    "code": "NEGATIVE_CASH",
+                    "value": cash,
+                    "message": "Cash balance is negative",
+                }
+            )
+
+        allocation = holdings_all[:top] if include_holdings else []
+        payload = {
+            "account": {
+                "equity": equity,
+                "market_value": market_value,
+                "cash": cash,
+                "buying_power": buying_power,
+                "withdrawable_amount": withdrawable,
+                "margin_debit": margin_debit,
+            },
+            "allocation": allocation,
+            "concentration": {
+                "largest_position_pct": largest_position_pct,
+                "top3_pct": top3_pct,
+                "top5_pct": top5_pct,
+                "herfindahl_index": herfindahl_index,
+            },
+            "exposure": exposure,
+            "alerts": alerts,
+            "generated_at": _now_utc_iso(),
+        }
+        return payload
+
+    _run_command(ctx, "portfolio analyze", _do, provider="brokerage")
 
 
 @orders_stock_app.command("place")
@@ -589,6 +998,42 @@ def options_chains(ctx: typer.Context, symbol: str = typer.Argument(...)) -> Non
     _run_command(ctx, "options chains", _do, provider="brokerage")
 
 
+@options_app.command("expirations")
+def options_expirations(ctx: typer.Context, symbol: str = typer.Argument(...)) -> None:
+    runtime = _runtime(ctx)
+
+    def _do():
+        expirations = runtime.brokerage_provider.option_expirations(symbol)
+        return {"symbol": symbol, "expiration_dates": expirations}
+
+    _run_command(ctx, "options expirations", _do, provider="brokerage")
+
+
+@options_app.command("strikes")
+def options_strikes(
+    ctx: typer.Context,
+    symbol: str = typer.Argument(...),
+    expiration_date: str = typer.Option(..., "--expiration-date"),
+    option_type: str = typer.Option("both", "--option-type"),
+) -> None:
+    runtime = _runtime(ctx)
+
+    def _do():
+        strikes = runtime.brokerage_provider.option_strikes(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            option_type=option_type,
+        )
+        return {
+            "symbol": symbol,
+            "expiration_date": expiration_date,
+            "option_type": option_type,
+            "strikes": strikes,
+        }
+
+    _run_command(ctx, "options strikes", _do, provider="brokerage")
+
+
 @options_contracts_app.command("find")
 def options_contracts_find(
     ctx: typer.Context,
@@ -608,6 +1053,112 @@ def options_contracts_find(
         )
 
     _run_command(ctx, "options contracts find", _do, provider="brokerage")
+
+
+@options_quotes_app.command("get")
+def options_quotes_get(
+    ctx: typer.Context,
+    symbol: str = typer.Option(..., "--symbol"),
+    expiration_date: str = typer.Option(..., "--expiration-date"),
+    strike: float = typer.Option(..., "--strike"),
+    option_type: str = typer.Option(..., "--option-type"),
+) -> None:
+    runtime = _runtime(ctx)
+
+    def _do():
+        return runtime.brokerage_provider.option_quote_get(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            strike_price=strike,
+            option_type=option_type,
+        )
+
+    _run_command(ctx, "options quotes get", _do, provider="brokerage")
+
+
+@options_quotes_app.command("list")
+def options_quotes_list(
+    ctx: typer.Context,
+    symbol: str = typer.Option(..., "--symbol"),
+    expiration_date: str = typer.Option(..., "--expiration-date"),
+    option_type: str = typer.Option("both", "--option-type"),
+    min_oi: int | None = typer.Option(None, "--min-oi"),
+    min_volume: int | None = typer.Option(None, "--min-volume"),
+    delta_min: float | None = typer.Option(None, "--delta-min"),
+    delta_max: float | None = typer.Option(None, "--delta-max"),
+    iv_min: float | None = typer.Option(None, "--iv-min"),
+    iv_max: float | None = typer.Option(None, "--iv-max"),
+    sort_by: str = typer.Option("strike", "--sort", help="strike|delta|iv|open_interest|volume"),
+    descending: bool = typer.Option(False, "--descending"),
+    query_limit: int | None = typer.Option(None, "--query-limit"),
+    offset: int = typer.Option(0, "--offset"),
+) -> None:
+    runtime = _runtime(ctx)
+
+    def _do():
+        if query_limit is not None and query_limit < 1:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--query-limit must be >= 1")
+        if offset < 0:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--offset must be >= 0")
+
+        rows = runtime.brokerage_provider.option_quotes_list(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            option_type=option_type,
+        )
+
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            open_interest = _safe_float(row.get("open_interest"))
+            volume = _safe_float(row.get("volume"))
+            delta = _safe_float(row.get("delta"))
+            iv = _safe_float(row.get("implied_volatility"))
+
+            if min_oi is not None and (open_interest is None or open_interest < min_oi):
+                continue
+            if min_volume is not None and (volume is None or volume < min_volume):
+                continue
+            if delta_min is not None and (delta is None or delta < delta_min):
+                continue
+            if delta_max is not None and (delta is None or delta > delta_max):
+                continue
+            if iv_min is not None and (iv is None or iv < iv_min):
+                continue
+            if iv_max is not None and (iv is None or iv > iv_max):
+                continue
+
+            filtered.append(row)
+
+        sort_key_map = {
+            "strike": "strike_price",
+            "delta": "delta",
+            "iv": "implied_volatility",
+            "open_interest": "open_interest",
+            "volume": "volume",
+        }
+        sort_field = sort_key_map.get(sort_by)
+        if sort_field is None:
+            raise CLIError(
+                code=ErrorCode.VALIDATION_ERROR,
+                message="--sort must be one of strike|delta|iv|open_interest|volume",
+            )
+
+        filtered.sort(
+            key=lambda row: _safe_float(row.get(sort_field)) if _safe_float(row.get(sort_field)) is not None else float("-inf"),
+            reverse=descending,
+        )
+
+        total = len(filtered)
+        sliced = filtered[offset:]
+        if query_limit is not None:
+            sliced = sliced[:query_limit]
+
+        return CommandOutput(
+            data=sliced,
+            meta_updates=_query_meta(total_count=total, returned_count=len(sliced), offset=offset),
+        )
+
+    _run_command(ctx, "options quotes list", _do, provider="brokerage")
 
 
 @options_orders_place_app.command("single")
@@ -778,14 +1329,87 @@ def options_orders_cancel(ctx: typer.Context, order_id: str = typer.Argument(...
 def options_orders_list(
     ctx: typer.Context,
     open_only: bool = typer.Option(False, "--open", help="Only open option orders"),
+    symbol: str | None = typer.Option(None, "--symbol"),
+    state: str | None = typer.Option(None, "--state"),
+    strategy: str | None = typer.Option(None, "--strategy"),
+    from_date: str | None = typer.Option(None, "--from-date"),
+    to_date: str | None = typer.Option(None, "--to-date"),
+    query_limit: int | None = typer.Option(None, "--query-limit"),
+    offset: int = typer.Option(0, "--offset"),
+    sort_by: str = typer.Option("created_at", "--sort", help="created_at|updated_at"),
+    descending: bool = typer.Option(False, "--descending"),
 ) -> None:
     runtime = _runtime(ctx)
 
     def _do():
-        return runtime.brokerage_provider.list_orders(
+        if query_limit is not None and query_limit < 1:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--query-limit must be >= 1")
+        if offset < 0:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--offset must be >= 0")
+
+        from_day = _parse_yyyy_mm_dd(from_date, arg_name="--from-date") if from_date else None
+        to_day = _parse_yyyy_mm_dd(to_date, arg_name="--to-date") if to_date else None
+        if from_day and to_day and from_day > to_day:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--from-date cannot be after --to-date")
+
+        rows = runtime.brokerage_provider.list_orders(
             open_only=open_only,
             asset_type="option",
             symbol_resolve_limit=runtime.limit,
+        )
+
+        filtered: list[dict[str, Any]] = []
+        symbol_filter = symbol.lower() if symbol else None
+        state_filter = state.lower() if state else None
+        strategy_filter = strategy.lower() if strategy else None
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            chain_symbol = str(row.get("chain_symbol") or row.get("symbol") or "").lower()
+            if symbol_filter and symbol_filter != chain_symbol:
+                continue
+
+            row_state = str(row.get("state") or row.get("derived_state") or "").lower()
+            if state_filter and state_filter not in row_state:
+                continue
+
+            if strategy_filter:
+                strategy_blob = " ".join(
+                    [
+                        str(row.get("strategy") or ""),
+                        str(row.get("opening_strategy") or ""),
+                        str(row.get("closing_strategy") or ""),
+                    ]
+                ).lower()
+                if strategy_filter not in strategy_blob:
+                    continue
+
+            created_dt = _parse_iso_timestamp(row.get("created_at"))
+            if from_day and (created_dt is None or created_dt.date() < from_day):
+                continue
+            if to_day and (created_dt is None or created_dt.date() > to_day):
+                continue
+
+            filtered.append(row)
+
+        if sort_by not in {"created_at", "updated_at"}:
+            raise CLIError(code=ErrorCode.VALIDATION_ERROR, message="--sort must be created_at or updated_at")
+
+        filtered.sort(
+            key=lambda row: _parse_iso_timestamp(row.get(sort_by)) or datetime.min.replace(tzinfo=UTC),
+            reverse=descending,
+        )
+
+        total = len(filtered)
+        sliced = filtered[offset:]
+        if query_limit is not None:
+            sliced = sliced[:query_limit]
+
+        return CommandOutput(
+            data=sliced,
+            meta_updates=_query_meta(total_count=total, returned_count=len(sliced), offset=offset),
         )
 
     _run_command(ctx, "options orders list", _do, provider="brokerage")

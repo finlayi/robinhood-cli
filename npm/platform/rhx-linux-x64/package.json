@@ -1,6 +1,6 @@
 {
   "name": "rhx-linux-x64",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Prebuilt native rhx binary for Linux x64",
   "license": "MIT",
   "os": [

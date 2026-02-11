@@ -1,6 +1,6 @@
 {
   "name": "rhx",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "Native npx launcher for the rhx CLI",
   "license": "MIT",
   "type": "commonjs",
@@ -30,9 +30,9 @@
     "trading"
   ],
   "optionalDependencies": {
-    "rhx-darwin-arm64": "0.2.5",
-    "rhx-linux-x64": "0.2.5",
-    "rhx-win32-x64": "0.2.5"
+    "rhx-darwin-arm64": "0.3.0",
+    "rhx-linux-x64": "0.3.0",
+    "rhx-win32-x64": "0.3.0"
   },
   "scripts": {
     "sync:versions": "node scripts/sync-platform-versions.cjs",

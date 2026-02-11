@@ -20,6 +20,57 @@ class AuthStatus(BaseModel):
     detail: str | None = None
 
 
+class BrokeragePassiveStatus(BaseModel):
+    session_pickle_exists: bool
+    credentials_present: bool
+    session_ready: bool
+    detail: str
+
+
+class OptionQuoteRecord(BaseModel):
+    contract_id: str | None = None
+    symbol: str
+    expiration_date: str
+    strike_price: float
+    option_type: Literal["call", "put"]
+    bid_price: str | None = None
+    ask_price: str | None = None
+    mark_price: str | None = None
+    last_trade_price: str | None = None
+    implied_volatility: str | None = None
+    delta: str | None = None
+    gamma: str | None = None
+    theta: str | None = None
+    vega: str | None = None
+    rho: str | None = None
+    open_interest: str | None = None
+    volume: str | None = None
+    updated_at: str | None = None
+    tradability: str | None = None
+    state: str | None = None
+
+
+class PortfolioHolding(BaseModel):
+    symbol: str
+    asset_type: str
+    quantity: float
+    last_price: float | None = None
+    market_value: float | None = None
+    weight_pct: float | None = None
+    cost_basis: float | None = None
+    unrealized_pnl: float | None = None
+    unrealized_pnl_pct: float | None = None
+
+
+class PortfolioAnalysisResult(BaseModel):
+    account: dict[str, Any]
+    allocation: list[PortfolioHolding]
+    concentration: dict[str, Any]
+    exposure: dict[str, Any]
+    alerts: list[dict[str, Any]]
+    generated_at: str
+
+
 class OptionLeg(BaseModel):
     expirationDate: str
     strike: float

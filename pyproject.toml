@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rhx"
-version = "0.2.5"
+version = "0.3.0"
 description = "Auth-first Robinhood CLI wrapper for agents"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Ian Finlay" }]
 dependencies = [
   "typer>=0.12.0",
