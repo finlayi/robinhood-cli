@@ -53,7 +53,8 @@ function copyDirectoryContents(sourceDir, destinationDir) {
   for (const entry of fs.readdirSync(sourceDir)) {
     fs.cpSync(path.join(sourceDir, entry), path.join(destinationDir, entry), {
       recursive: true,
-      force: true
+      force: true,
+      verbatimSymlinks: true
     });
   }
 }
