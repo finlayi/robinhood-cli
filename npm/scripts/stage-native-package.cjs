@@ -59,6 +59,35 @@ function copyDirectoryContents(sourceDir, destinationDir) {
   }
 }
 
+function ensureDarwinPythonShim(binDir) {
+  const shimPath = path.join(binDir, "_internal", "Python");
+  if (fs.existsSync(shimPath)) {
+    return;
+  }
+
+  const versionsDir = path.join(binDir, "_internal", "Python.framework", "Versions");
+  if (!fs.existsSync(versionsDir)) {
+    return;
+  }
+
+  const entries = fs.readdirSync(versionsDir);
+  const candidates = ["Current", ...entries];
+
+  for (const candidate of candidates) {
+    const frameworkBinary = path.join(versionsDir, candidate, "Python");
+    if (!fs.existsSync(frameworkBinary)) {
+      continue;
+    }
+    const binaryStat = fs.statSync(frameworkBinary);
+    if (!binaryStat.isFile()) {
+      continue;
+    }
+    fs.copyFileSync(frameworkBinary, shimPath);
+    fs.chmodSync(shimPath, 0o755);
+    return;
+  }
+}
+
 const { target, source } = parseArgs(process.argv.slice(2));
 
 if (!target) {
@@ -90,6 +119,10 @@ if (sourceStat.isFile()) {
   copyDirectoryContents(sourcePath, binDir);
 } else {
   fail(`Unsupported source type: ${sourcePath}`);
+}
+
+if (target === "darwin-arm64") {
+  ensureDarwinPythonShim(binDir);
 }
 
 if (target !== "win32-x64") {
