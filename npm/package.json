@@ -1,7 +1,7 @@
 {
   "name": "rhx",
-  "version": "0.3.0",
-  "description": "Native npx launcher for the rhx CLI",
+  "version": "0.3.1",
+  "description": "Auth-first Robinhood CLI launcher for npx",
   "license": "MIT",
   "type": "commonjs",
   "publishConfig": {
@@ -22,17 +22,24 @@
     "url": "git+https://github.com/finlayi/robinhood-cli.git",
     "directory": "npm"
   },
+  "homepage": "https://github.com/finlayi/robinhood-cli#readme",
+  "bugs": {
+    "url": "https://github.com/finlayi/robinhood-cli/issues"
+  },
   "keywords": [
     "robinhood",
     "cli",
-    "python",
+    "automation",
+    "json",
+    "options",
+    "crypto",
     "npx",
     "trading"
   ],
   "optionalDependencies": {
-    "rhx-darwin-arm64": "0.3.0",
-    "rhx-linux-x64": "0.3.0",
-    "rhx-win32-x64": "0.3.0"
+    "rhx-darwin-arm64": "0.3.1",
+    "rhx-linux-x64": "0.3.1",
+    "rhx-win32-x64": "0.3.1"
   },
   "scripts": {
     "sync:versions": "node scripts/sync-platform-versions.cjs",
