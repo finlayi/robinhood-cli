@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -22,12 +24,17 @@ class DummyStore:
 class DummyAuthManager:
     crypto_ok = True
 
-    def __init__(self, profile: str, session_dir: Path):
+    def __init__(self, profile: str, session_dir: Path, suppress_external_output: bool = False):
         self.profile = profile
         self.session_dir = session_dir
         self.session_pickle_path = session_dir / f"robinhood_{profile}.pickle"
         self.store = DummyStore()
         self.logged_out = False
+        self.suppress_external_output = suppress_external_output
+
+    @contextmanager
+    def external_output_guard(self):
+        yield
 
     def ensure_brokerage_authenticated(self, interactive: bool | None = None, force: bool = False):
         del interactive, force
@@ -87,7 +94,13 @@ class DummyBrokerageProvider:
     def get_order(self, order_id: str, asset_type: str | None = None):
         return {"id": order_id, "asset_type": asset_type or "stock"}
 
-    def list_orders(self, open_only: bool = False, asset_type: str | None = None):
+    def list_orders(
+        self,
+        open_only: bool = False,
+        asset_type: str | None = None,
+        symbol_resolve_limit: int | None = None,
+    ):
+        del symbol_resolve_limit
         return [{"id": "1", "open_only": open_only, "asset_type": asset_type or "stock"}]
 
     def option_chains(self, symbol: str):
@@ -113,6 +126,37 @@ class HumanQuoteBrokerageProvider(DummyBrokerageProvider):
                 "updated_at": "2026-02-10T23:32:36Z",
             },
         }
+
+
+class NoisyAuthManager(DummyAuthManager):
+    @contextmanager
+    def external_output_guard(self):
+        if not self.suppress_external_output:
+            yield
+            return
+        sink = StringIO()
+        with redirect_stdout(sink), redirect_stderr(sink):
+            yield
+
+    def ensure_brokerage_authenticated(self, interactive: bool | None = None, force: bool = False):
+        del interactive, force
+        with self.external_output_guard():
+            print("Starting login process...")
+            print("Loading Market Data |", end="\r")
+        return AuthStatus(provider="brokerage", authenticated=True, detail="ok")
+
+
+class NoisyBrokerageProvider(DummyBrokerageProvider):
+    def option_contracts_find(self, symbol: str, expiration_date=None, strike_price=None, option_type=None):
+        with self.auth.external_output_guard():
+            print("Found Additional pages.")
+            print("Loading Market Data /", end="\r")
+        return super().option_contracts_find(
+            symbol=symbol,
+            expiration_date=expiration_date,
+            strike_price=strike_price,
+            option_type=option_type,
+        )
 
 
 def _payload(result):
@@ -425,6 +469,35 @@ def test_cli_output_selector_validation_and_json_only_enforcement(monkeypatch: p
     no_json_view = runner.invoke(cli.app, ["--config", str(config_path), "--view", "full", "positions", "list"])
     assert no_json_view.exit_code == 2
     assert "VALIDATION_ERROR" in no_json_view.output
+
+
+def test_cli_json_mode_suppresses_noisy_brokerage_output(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(cli, "AuthManager", NoisyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", NoisyBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    auth_status = runner.invoke(cli.app, base + ["auth", "status"])
+    assert auth_status.exit_code == 0, auth_status.output
+    assert "Starting login process" not in auth_status.output
+    assert "Loading Market Data" not in auth_status.output
+    auth_payload = json.loads(auth_status.output)
+    assert set(auth_payload.keys()) == {"ok", "command", "provider", "data", "error", "meta"}
+    assert auth_payload["command"] == "auth status"
+
+    contracts = runner.invoke(
+        cli.app,
+        base + ["options", "contracts", "find", "--symbol", "AAPL", "--expiration-date", "2026-12-18"],
+    )
+    assert contracts.exit_code == 0, contracts.output
+    assert "Found Additional pages." not in contracts.output
+    assert "Loading Market Data" not in contracts.output
+    contracts_payload = json.loads(contracts.output)
+    assert set(contracts_payload.keys()) == {"ok", "command", "provider", "data", "error", "meta"}
+    assert contracts_payload["command"] == "options contracts find"
 
 
 def test_cli_human_mode_outputs_compact_summary(monkeypatch: pytest.MonkeyPatch, tmp_path):

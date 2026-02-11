@@ -190,7 +190,13 @@ class RobinhoodCryptoProvider:
         data = self._request("GET", f"/api/v1/crypto/trading/orders/{order_id}/")
         return {"asset_type": "crypto", "order": data}
 
-    def list_orders(self, open_only: bool = False, asset_type: str | None = None) -> list[dict[str, Any]]:
+    def list_orders(
+        self,
+        open_only: bool = False,
+        asset_type: str | None = None,
+        symbol_resolve_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        del symbol_resolve_limit
         params = {"state": "open"} if open_only else None
         data = self._request("GET", "/api/v1/crypto/trading/orders/", params=params)
 

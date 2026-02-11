@@ -16,6 +16,9 @@ from rhx.models import (
 from rhx.providers.base import OrderIntent
 
 
+ORDER_SYMBOL_RESOLUTION_LIMIT = 200
+
+
 class RobinStocksProvider:
     name = "brokerage"
 
@@ -31,6 +34,13 @@ class RobinStocksProvider:
     def _ensure_auth(self, interactive: bool = False) -> None:
         self.auth.ensure_brokerage_authenticated(interactive=interactive)
 
+    def _call_quiet(self, fn, *args, **kwargs):
+        guard = getattr(self.auth, "external_output_guard", None)
+        if guard is None:
+            return fn(*args, **kwargs)
+        with guard():
+            return fn(*args, **kwargs)
+
     def capabilities(self) -> CapabilitySet:
         return CapabilitySet(stocks=True, crypto=True, options=True, options_spreads=True)
 
@@ -40,24 +50,24 @@ class RobinStocksProvider:
     def account_summary(self) -> dict[str, Any]:
         self._ensure_auth(interactive=False)
         return {
-            "account_profile": self._rh.load_account_profile(),
-            "portfolio_profile": self._rh.load_portfolio_profile(),
-            "user_profile": self._rh.load_user_profile(),
+            "account_profile": self._call_quiet(self._rh.load_account_profile),
+            "portfolio_profile": self._call_quiet(self._rh.load_portfolio_profile),
+            "user_profile": self._call_quiet(self._rh.load_user_profile),
         }
 
     def positions(self) -> list[dict[str, Any]]:
         self._ensure_auth(interactive=False)
         positions: list[dict[str, Any]] = []
 
-        stock_positions = self._rh.get_open_stock_positions() or []
+        stock_positions = self._call_quiet(self._rh.get_open_stock_positions) or []
         for p in stock_positions:
             positions.append({"asset_type": "stock", **p})
 
-        crypto_positions = self._rh.get_crypto_positions() or []
+        crypto_positions = self._call_quiet(self._rh.get_crypto_positions) or []
         for p in crypto_positions:
             positions.append({"asset_type": "crypto", **p})
 
-        option_positions = self._rh.get_open_option_positions() or []
+        option_positions = self._call_quiet(self._rh.get_open_option_positions) or []
         for p in option_positions:
             positions.append({"asset_type": "option", **p})
 
@@ -70,10 +80,10 @@ class RobinStocksProvider:
             return {
                 "asset_type": "crypto",
                 "symbol": symbol,
-                "quote": self._rh.get_crypto_quote(base),
+                "quote": self._call_quiet(self._rh.get_crypto_quote, base),
             }
 
-        quote = self._rh.get_quotes(symbol)
+        quote = self._call_quiet(self._rh.get_quotes, symbol)
         if isinstance(quote, list):
             quote = quote[0] if quote else {}
         return {"asset_type": "stock", "symbol": symbol, "quote": quote}
@@ -105,14 +115,27 @@ class RobinStocksProvider:
         if intent.order_type == "market":
             if intent.notional_usd is not None:
                 fn = self._rh.order_buy_fractional_by_price if side == "buy" else self._rh.order_sell_fractional_by_price
-                raw = fn(intent.symbol, float(intent.notional_usd), timeInForce=tif, extendedHours=intent.extended_hours)
+                raw = self._call_quiet(
+                    fn,
+                    intent.symbol,
+                    float(intent.notional_usd),
+                    timeInForce=tif,
+                    extendedHours=intent.extended_hours,
+                )
             else:
                 fn = self._rh.order_buy_market if side == "buy" else self._rh.order_sell_market
-                raw = fn(intent.symbol, float(intent.quantity), timeInForce=tif, extendedHours=intent.extended_hours)
+                raw = self._call_quiet(
+                    fn,
+                    intent.symbol,
+                    float(intent.quantity),
+                    timeInForce=tif,
+                    extendedHours=intent.extended_hours,
+                )
 
         elif intent.order_type == "limit":
             fn = self._rh.order_buy_limit if side == "buy" else self._rh.order_sell_limit
-            raw = fn(
+            raw = self._call_quiet(
+                fn,
                 intent.symbol,
                 float(intent.quantity),
                 float(intent.limit_price),
@@ -121,7 +144,8 @@ class RobinStocksProvider:
             )
         else:
             fn = self._rh.order_buy_stop_limit if side == "buy" else self._rh.order_sell_stop_limit
-            raw = fn(
+            raw = self._call_quiet(
+                fn,
                 intent.symbol,
                 float(intent.quantity),
                 float(intent.limit_price),
@@ -139,17 +163,17 @@ class RobinStocksProvider:
         if intent.order_type == "market":
             if intent.amount_in == "price":
                 fn = self._rh.order_buy_crypto_by_price if side == "buy" else self._rh.order_sell_crypto_by_price
-                raw = fn(intent.symbol, float(intent.notional_usd), timeInForce=tif)
+                raw = self._call_quiet(fn, intent.symbol, float(intent.notional_usd), timeInForce=tif)
             else:
                 fn = self._rh.order_buy_crypto_by_quantity if side == "buy" else self._rh.order_sell_crypto_by_quantity
-                raw = fn(intent.symbol, float(intent.quantity), timeInForce=tif)
+                raw = self._call_quiet(fn, intent.symbol, float(intent.quantity), timeInForce=tif)
         else:
             if intent.amount_in == "price":
                 fn = self._rh.order_buy_crypto_limit_by_price if side == "buy" else self._rh.order_sell_crypto_limit_by_price
-                raw = fn(intent.symbol, float(intent.notional_usd), float(intent.limit_price), timeInForce=tif)
+                raw = self._call_quiet(fn, intent.symbol, float(intent.notional_usd), float(intent.limit_price), timeInForce=tif)
             else:
                 fn = self._rh.order_buy_crypto_limit if side == "buy" else self._rh.order_sell_crypto_limit
-                raw = fn(intent.symbol, float(intent.quantity), float(intent.limit_price), timeInForce=tif)
+                raw = self._call_quiet(fn, intent.symbol, float(intent.quantity), float(intent.limit_price), timeInForce=tif)
 
         return self._normalize_order_result(raw, "crypto", intent.symbol, intent.side)
 
@@ -166,17 +190,19 @@ class RobinStocksProvider:
         )
 
         if intent.side == "buy" and intent.order_type == "limit":
-            raw = self._rh.order_buy_option_limit(price=float(intent.price), **common)
+            raw = self._call_quiet(self._rh.order_buy_option_limit, price=float(intent.price), **common)
         elif intent.side == "buy" and intent.order_type == "stop_limit":
-            raw = self._rh.order_buy_option_stop_limit(
+            raw = self._call_quiet(
+                self._rh.order_buy_option_stop_limit,
                 limitPrice=float(intent.limit_price),
                 stopPrice=float(intent.stop_price),
                 **common,
             )
         elif intent.side == "sell" and intent.order_type == "limit":
-            raw = self._rh.order_sell_option_limit(price=float(intent.price), **common)
+            raw = self._call_quiet(self._rh.order_sell_option_limit, price=float(intent.price), **common)
         else:
-            raw = self._rh.order_sell_option_stop_limit(
+            raw = self._call_quiet(
+                self._rh.order_sell_option_stop_limit,
                 limitPrice=float(intent.limit_price),
                 stopPrice=float(intent.stop_price),
                 **common,
@@ -187,7 +213,8 @@ class RobinStocksProvider:
     def _place_option_spread(self, intent: OrderIntentOptionSpread) -> OrderResult:
         spread = [leg.model_dump(mode="python") for leg in intent.spread]
         if intent.direction == "credit":
-            raw = self._rh.order_option_credit_spread(
+            raw = self._call_quiet(
+                self._rh.order_option_credit_spread,
                 price=float(intent.price),
                 symbol=intent.symbol,
                 quantity=int(intent.quantity),
@@ -195,7 +222,8 @@ class RobinStocksProvider:
                 timeInForce=intent.time_in_force,
             )
         else:
-            raw = self._rh.order_option_debit_spread(
+            raw = self._call_quiet(
+                self._rh.order_option_debit_spread,
                 price=float(intent.price),
                 symbol=intent.symbol,
                 quantity=int(intent.quantity),
@@ -229,7 +257,7 @@ class RobinStocksProvider:
 
         for kind, fn in funcs:
             try:
-                result = fn(order_id)
+                result = self._call_quiet(fn, order_id)
                 return {"asset_type": kind, "result": result}
             except Exception as exc:
                 errors.append(f"{kind}: {exc}")
@@ -243,7 +271,7 @@ class RobinStocksProvider:
         errors: list[str] = []
         for kind, fn in funcs:
             try:
-                result = fn(order_id)
+                result = self._call_quiet(fn, order_id)
                 if result:
                     return {"asset_type": kind, "order": result}
             except Exception as exc:
@@ -251,30 +279,48 @@ class RobinStocksProvider:
 
         raise CLIError(code=ErrorCode.BROKER_REJECTED, message="Unable to retrieve order: " + "; ".join(errors))
 
-    def list_orders(self, open_only: bool = False, asset_type: str | None = None) -> list[dict[str, Any]]:
+    def list_orders(
+        self,
+        open_only: bool = False,
+        asset_type: str | None = None,
+        symbol_resolve_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
         self._ensure_auth(interactive=False)
 
         items: list[dict[str, Any]] = []
         if asset_type in (None, "stock"):
-            stock = self._rh.get_all_open_stock_orders() if open_only else self._rh.get_all_stock_orders()
+            stock = (
+                self._call_quiet(self._rh.get_all_open_stock_orders)
+                if open_only
+                else self._call_quiet(self._rh.get_all_stock_orders)
+            )
             for row in stock or []:
                 items.append({"asset_type": "stock", **row})
 
         if asset_type in (None, "option"):
-            options = self._rh.get_all_open_option_orders() if open_only else self._rh.get_all_option_orders()
+            options = (
+                self._call_quiet(self._rh.get_all_open_option_orders)
+                if open_only
+                else self._call_quiet(self._rh.get_all_option_orders)
+            )
             for row in options or []:
                 items.append({"asset_type": "option", **row})
 
         if asset_type in (None, "crypto"):
-            crypto = self._rh.get_all_open_crypto_orders() if open_only else self._rh.get_all_crypto_orders()
+            crypto = (
+                self._call_quiet(self._rh.get_all_open_crypto_orders)
+                if open_only
+                else self._call_quiet(self._rh.get_all_crypto_orders)
+            )
             for row in crypto or []:
                 items.append({"asset_type": "crypto", **row})
 
+        self._hydrate_stock_order_symbols(items, symbol_resolve_limit)
         return items
 
     def option_chains(self, symbol: str) -> dict[str, Any]:
         self._ensure_auth(interactive=False)
-        return self._rh.get_chains(symbol)
+        return self._call_quiet(self._rh.get_chains, symbol)
 
     def option_contracts_find(
         self,
@@ -286,20 +332,55 @@ class RobinStocksProvider:
         self._ensure_auth(interactive=False)
 
         if expiration_date and strike_price is not None:
-            result = self._rh.find_options_by_expiration_and_strike(
+            result = self._call_quiet(
+                self._rh.find_options_by_expiration_and_strike,
                 symbol,
                 expiration_date,
                 strike_price,
                 optionType=option_type,
             )
         elif expiration_date:
-            result = self._rh.find_options_by_expiration(symbol, expiration_date, optionType=option_type)
+            result = self._call_quiet(self._rh.find_options_by_expiration, symbol, expiration_date, optionType=option_type)
         elif strike_price is not None:
-            result = self._rh.find_options_by_strike(symbol, strike_price, optionType=option_type)
+            result = self._call_quiet(self._rh.find_options_by_strike, symbol, strike_price, optionType=option_type)
         else:
-            result = self._rh.find_tradable_options(symbol, optionType=option_type)
+            result = self._call_quiet(self._rh.find_tradable_options, symbol, optionType=option_type)
 
         return result or []
+
+    def _hydrate_stock_order_symbols(self, items: list[dict[str, Any]], symbol_resolve_limit: int | None) -> None:
+        if not items:
+            return
+
+        row_limit = ORDER_SYMBOL_RESOLUTION_LIMIT
+        if symbol_resolve_limit is not None:
+            row_limit = min(max(symbol_resolve_limit, 0), ORDER_SYMBOL_RESOLUTION_LIMIT)
+        if row_limit <= 0:
+            return
+
+        cache: dict[str, str | None] = {}
+        for row in items[:row_limit]:
+            if row.get("asset_type") != "stock":
+                continue
+
+            symbol = row.get("symbol")
+            if isinstance(symbol, str) and symbol.strip():
+                continue
+
+            instrument = row.get("instrument")
+            if not isinstance(instrument, str) or not instrument:
+                continue
+
+            if instrument not in cache:
+                try:
+                    resolved = self._call_quiet(self._rh.get_symbol_by_url, instrument)
+                except Exception:
+                    resolved = None
+                cache[instrument] = resolved if isinstance(resolved, str) and resolved else None
+
+            resolved_symbol = cache[instrument]
+            if resolved_symbol:
+                row["symbol"] = resolved_symbol
 
     def _cancel_funcs(self, asset_type: str | None):
         if asset_type == "stock":

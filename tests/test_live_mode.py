@@ -39,8 +39,13 @@ class DummyBrokerageProvider:
         del asset_type
         return {"id": order_id}
 
-    def list_orders(self, open_only: bool = False, asset_type: str | None = None):
-        del open_only, asset_type
+    def list_orders(
+        self,
+        open_only: bool = False,
+        asset_type: str | None = None,
+        symbol_resolve_limit: int | None = None,
+    ):
+        del open_only, asset_type, symbol_resolve_limit
         return []
 
     def option_chains(self, symbol: str):

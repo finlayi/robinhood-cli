@@ -139,6 +139,8 @@ Every command returns:
 - `--fields` and `--limit` are available for additional output trimming.
 - `--view`, `--fields`, and `--limit` require `--json`.
 - `--human` provides compact non-JSON text output and cannot be combined with `--json`.
+- `--json` output is strict machine-readable stdout: upstream brokerage progress logs/spinners are suppressed.
+- `orders list` now performs bounded best-effort stock symbol hydration from instrument URLs (up to 200 rows, or `--limit` rows when lower).
 
 On failure, `ok=false` and `error.code` is one of:
 

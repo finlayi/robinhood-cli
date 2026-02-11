@@ -153,3 +153,15 @@ def test_shape_invalid_view_raises_validation_error():
         )
     assert "Unsupported --view" in str(exc.value)
     assert exc.value.code == ErrorCode.VALIDATION_ERROR
+
+
+def test_shape_orders_list_preserves_hydrated_symbol():
+    shaped, _ = shape_data(
+        command="orders list",
+        provider="brokerage",
+        data=[{"asset_type": "stock", "id": "ord-1", "symbol": "VOO", "state": "filled"}],
+        view="summary",
+        fields=None,
+        limit=None,
+    )
+    assert shaped[0]["symbol"] == "VOO"
