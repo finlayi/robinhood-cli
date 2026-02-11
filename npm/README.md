@@ -1,26 +1,44 @@
 # rhx
 
-Native npm launcher for the `rhx` CLI.
+Auth-first Robinhood CLI available via `npx`.
 
-## Usage
+This npm package is a launcher for the `rhx` CLI. It runs a prebuilt native binary on supported platforms and falls back to Python launchers (`uvx`/`pipx`) when needed.
+
+## Quick Start
 
 ```bash
 npx rhx --help
-npx rhx quote get AAPL
+npx rhx auth login
+npx rhx auth verify
 ```
 
-Supported no-prereq platforms:
-
-1. macOS arm64
-2. Linux x64
-3. Windows x64
-
-The package installs a matching prebuilt native binary via optional dependencies and runs it directly.
-
-If you are on an unsupported platform, `rhx` falls back to Python launchers (`uvx`/`pipx`).
-
-To force Python fallback even on a supported platform:
+## Common Examples
 
 ```bash
-RHX_ENABLE_PYTHON_FALLBACK=1 npx rhx --help
+# Quote lookup
+npx rhx --json quote get AAPL
+
+# Batch quotes
+npx rhx --json quote list --symbols AAPL,MSFT,BTC-USD
+
+# Enable live mode and place a stock order
+TOKEN=$(npx rhx --json live on --yes | jq -r '.data.live_confirm_token')
+npx rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
+
+# Option chain discovery
+npx rhx --json options expirations AAPL
+npx rhx --json options strikes AAPL --expiration-date 2026-12-18 --option-type both
 ```
+
+## Platform Support
+
+- `darwin-arm64`
+- `linux-x64`
+- `win32-x64`
+
+Set `RHX_ENABLE_PYTHON_FALLBACK=1` to force Python fallback even on a supported platform.
+
+## Links
+
+- Repo and full docs: <https://github.com/finlayi/robinhood-cli>
+- Security policy: <https://github.com/finlayi/robinhood-cli/blob/main/SECURITY.md>
