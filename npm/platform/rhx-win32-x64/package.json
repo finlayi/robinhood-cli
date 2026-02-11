@@ -1,6 +1,6 @@
 {
   "name": "rhx-win32-x64",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Prebuilt native rhx binary for Windows x64",
   "license": "MIT",
   "os": [
