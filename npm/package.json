@@ -38,7 +38,7 @@
   ],
   "optionalDependencies": {
     "rhx-darwin-arm64": "0.3.2",
-    "rhx-linux-x64": "0.3.2",
+    "rhx-linux-x64": "0.3.1",
     "rhx-win32-x64": "0.3.2"
   },
   "scripts": {
