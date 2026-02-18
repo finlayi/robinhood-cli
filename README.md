@@ -148,6 +148,10 @@ rhx --json portfolio analyze --top 10
 # Stock order (brokerage)
 TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
 rhx orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
+# Note: stock --qty must be whole shares; use --notional-usd for fractional stock trades.
+
+# Fractional stock order (use notional dollars)
+rhx orders stock place --symbol AAPL --side buy --type market --notional-usd 50 --live-confirm-token "$TOKEN"
 
 # Crypto order (auto routes to official crypto API when credentials exist)
 rhx orders crypto place --symbol BTC-USD --side buy --type limit --amount-in quantity --qty 0.001 --limit-price 40000 --live-confirm-token "$TOKEN"

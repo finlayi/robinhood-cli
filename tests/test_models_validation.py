@@ -19,6 +19,9 @@ def test_stock_and_crypto_validation_errors():
     with pytest.raises(ValidationError):
         OrderIntentCrypto(symbol="BTC-USD", side="buy", order_type="limit", amount_in="price", notional_usd=10)
 
+    with pytest.raises(ValidationError, match="Use --notional-usd for fractional stock orders"):
+        OrderIntentStock(symbol="AAPL", side="buy", order_type="market", quantity=0.25)
+
 
 def test_option_single_validation_errors_and_output_failure():
     with pytest.raises(ValidationError):

@@ -1,6 +1,6 @@
 {
   "name": "rhx",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Auth-first Robinhood CLI launcher for npx",
   "license": "MIT",
   "type": "commonjs",
@@ -37,9 +37,9 @@
     "trading"
   ],
   "optionalDependencies": {
-    "rhx-darwin-arm64": "0.3.1",
-    "rhx-linux-x64": "0.3.1",
-    "rhx-win32-x64": "0.3.1"
+    "rhx-darwin-arm64": "0.3.2",
+    "rhx-linux-x64": "0.3.2",
+    "rhx-win32-x64": "0.3.2"
   },
   "scripts": {
     "sync:versions": "node scripts/sync-platform-versions.cjs",

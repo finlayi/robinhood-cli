@@ -581,6 +581,44 @@ def test_cli_human_and_json_are_mutually_exclusive(monkeypatch: pytest.MonkeyPat
     assert payload["meta"]["output_schema"] == "v3"
 
 
+def test_cli_rejects_fractional_stock_qty_with_notional_guidance(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    monkeypatch.setattr(cli, "AuthManager", DummyAuthManager)
+    monkeypatch.setattr(cli, "RobinStocksProvider", DummyBrokerageProvider)
+    monkeypatch.setattr(cli, "RobinhoodCryptoProvider", DummyCryptoProvider)
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.toml"
+    base = ["--json", "--config", str(config_path)]
+
+    live_on_payload = _payload(runner.invoke(cli.app, base + ["live", "on", "--yes"]))
+    live_token = live_on_payload["data"]["live_confirm_token"]
+
+    result = runner.invoke(
+        cli.app,
+        base
+        + [
+            "orders",
+            "stock",
+            "place",
+            "--symbol",
+            "AAPL",
+            "--side",
+            "buy",
+            "--type",
+            "market",
+            "--qty",
+            "0.25",
+            "--live-confirm-token",
+            live_token,
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "VALIDATION_ERROR"
+    assert "Use --notional-usd for fractional stock orders" in payload["error"]["message"]
+
+
 def test_cli_auth_status_is_passive_and_verify_is_active(monkeypatch: pytest.MonkeyPatch, tmp_path):
     class TrackingAuth(DummyAuthManager):
         passive_calls = 0

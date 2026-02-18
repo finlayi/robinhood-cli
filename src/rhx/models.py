@@ -95,6 +95,10 @@ class OrderIntentStock(BaseModel):
     def validate_order(self) -> "OrderIntentStock":
         if self.quantity is None and self.notional_usd is None:
             raise ValueError("Either quantity or notional_usd is required")
+        if self.quantity is not None and not float(self.quantity).is_integer():
+            raise ValueError(
+                "Fractional stock quantities via --qty are not supported. Use --notional-usd for fractional stock orders."
+            )
         if self.order_type == "limit" and self.limit_price is None:
             raise ValueError("limit_price is required for limit orders")
         if self.order_type == "stop_limit" and (self.limit_price is None or self.stop_price is None):
