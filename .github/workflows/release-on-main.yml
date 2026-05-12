@@ -35,22 +35,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          py_version="$(python3 - <<'PY'
-          import tomllib
+          version="$(node -p "require('./npm/package.json').version")"
 
-          with open("pyproject.toml", "rb") as f:
-              data = tomllib.load(f)
-          print(data["project"]["version"])
-          PY
-          )"
-          npm_version="$(node -p "require('./npm/package.json').version")"
-
-          if [[ "$py_version" != "$npm_version" ]]; then
-            echo "Version mismatch: pyproject.toml=$py_version npm/package.json=$npm_version" >&2
-            exit 1
-          fi
-
-          tag="v$py_version"
+          tag="v$version"
           git fetch --tags origin
 
           if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
@@ -59,7 +46,7 @@ jobs:
             should_release="true"
           fi
 
-          echo "version=$py_version" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
 
@@ -99,18 +86,6 @@ jobs:
                 prerelease: false,
               });
             }
-
-      - name: Dispatch Python publish workflow
-        if: steps.version.outputs.should_release == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: "release-python.yml",
-              ref: "${{ steps.version.outputs.tag }}",
-            });
 
       - name: Dispatch NPM publish workflow
         if: steps.version.outputs.should_release == 'true'

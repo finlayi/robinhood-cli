@@ -17,7 +17,7 @@ const TARGETS = {
   "win32-x64": {
     packageDir: path.resolve(__dirname, "..", "platform", "rhx-win32-x64"),
     outputName: "rhx.exe",
-    defaultSource: path.resolve(process.cwd(), "dist", "rhx")
+    defaultSource: path.resolve(process.cwd(), "dist", "rhx.exe")
   }
 };
 
@@ -45,6 +45,9 @@ function fail(message) {
 function clearDirectory(directoryPath) {
   fs.mkdirSync(directoryPath, { recursive: true });
   for (const entry of fs.readdirSync(directoryPath)) {
+    if (entry === ".gitkeep") {
+      continue;
+    }
     fs.rmSync(path.join(directoryPath, entry), { recursive: true, force: true });
   }
 }
@@ -57,60 +60,6 @@ function copyDirectoryContents(sourceDir, destinationDir) {
       verbatimSymlinks: true
     });
   }
-}
-
-function resolveDarwinFrameworkBinary(binDir, shimPath) {
-  if (fs.existsSync(shimPath)) {
-    const shimStat = fs.lstatSync(shimPath);
-    if (shimStat.isSymbolicLink()) {
-      const symlinkTarget = fs.readlinkSync(shimPath);
-      const symlinkResolved = path.resolve(path.dirname(shimPath), symlinkTarget);
-      if (fs.existsSync(symlinkResolved) && fs.statSync(symlinkResolved).isFile()) {
-        return symlinkResolved;
-      }
-    }
-  }
-
-  const versionsDir = path.join(binDir, "_internal", "Python.framework", "Versions");
-  if (!fs.existsSync(versionsDir)) {
-    return null;
-  }
-
-  const entries = fs.readdirSync(versionsDir);
-  const candidates = ["Current", ...entries];
-
-  for (const candidate of candidates) {
-    const frameworkBinary = path.join(versionsDir, candidate, "Python");
-    if (!fs.existsSync(frameworkBinary)) {
-      continue;
-    }
-    const binaryStat = fs.statSync(frameworkBinary);
-    if (!binaryStat.isFile()) {
-      continue;
-    }
-    return frameworkBinary;
-  }
-
-  return null;
-}
-
-function ensureDarwinPythonShim(binDir) {
-  const shimPath = path.join(binDir, "_internal", "Python");
-  const frameworkBinary = resolveDarwinFrameworkBinary(binDir, shimPath);
-  if (!frameworkBinary) {
-    return;
-  }
-
-  if (fs.existsSync(shimPath)) {
-    const shimStat = fs.lstatSync(shimPath);
-    if (shimStat.isFile() && !shimStat.isSymbolicLink()) {
-      return;
-    }
-    fs.rmSync(shimPath, { force: true });
-  }
-
-  fs.copyFileSync(frameworkBinary, shimPath);
-  fs.chmodSync(shimPath, 0o755);
 }
 
 const { target, source } = parseArgs(process.argv.slice(2));
@@ -144,10 +93,6 @@ if (sourceStat.isFile()) {
   copyDirectoryContents(sourcePath, binDir);
 } else {
   fail(`Unsupported source type: ${sourcePath}`);
-}
-
-if (target === "darwin-arm64") {
-  ensureDarwinPythonShim(binDir);
 }
 
 if (target !== "win32-x64") {
