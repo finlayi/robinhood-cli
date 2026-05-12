@@ -1,74 +1,89 @@
 # rhx
 
-Auth-first Robinhood CLI wrapper for agent workflows.
+Go-native Robinhood CLI for agent workflows.
 
-## What it does
+## What It Does
 
-- Wraps `robin_stocks` for brokerage/equities/options (including spread helpers).
-- Wraps Robinhood's official crypto trading API when crypto API credentials are configured.
-- Keeps brokerage auth persistent via session pickle and keychain-backed credentials.
-- Uses global live mode + short-lived confirmation token + configurable safety limits before placing orders.
-- Emits deterministic JSON envelopes with `--json` for automation, with summary-default payloads.
+- Calls Robinhood brokerage endpoints directly for account, positions, quotes, and stock orders.
+- Calls Robinhood's official crypto trading API directly when crypto API credentials are configured.
+- Keeps `npx rhx` as the primary entrypoint through prebuilt Go binaries.
+- Stores brokerage credentials in the OS keyring when available, with `RH_USERNAME`/`RH_PASSWORD` env vars as a non-persistent fallback.
+- Stores brokerage sessions as owner-only JSON files under `~/.config/robinhood-cli/sessions`.
+- Uses global live mode plus short-lived confirmation tokens before order placement.
+- Emits deterministic JSON envelopes with `--json` for automation.
 
 ## Install
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
-```
-
-Or with pipx:
-
-```bash
-pipx install .
-```
-
-`npx` launcher (wrapper package):
 
 ```bash
 npx rhx --help
 ```
 
-On supported platforms (`darwin-arm64`, `linux-x64`, `win32-x64`), `npx rhx` uses a prebuilt native binary with no Python launcher setup required.
+Supported native npm targets:
+
+- `darwin-arm64`
+- `linux-x64`
+- `win32-x64`
+
+Local development:
+
+```bash
+go test ./...
+go build -o dist/rhx ./cmd/rhx
+./dist/rhx --help
+```
+
+Go library usage:
+
+```go
+import (
+	"context"
+
+	"github.com/finlayi/robinhood-cli/pkg/rhx"
+)
+
+client, err := rhx.NewClient("default", "")
+positions, err := client.Positions(context.Background())
+```
 
 ## Authentication
 
-### Brokerage (`robin_stocks`)
-
 ```bash
 rhx auth login
-rhx auth status   # passive/local state only (no network check)
+rhx auth status   # passive/local state only
 rhx auth verify   # active API verification
 ```
 
-- `auth status` returns passive brokerage status fields:
-  - `session_pickle_exists`
-  - `credentials_present`
-  - `session_ready`
-  - `detail`
-- `auth verify` returns active auth check fields:
-  - `authenticated`
-  - `mfa_required`
-  - `detail`
-- Session file: `~/.config/robinhood-cli/sessions/robinhood_<profile>.pickle`
-- Credentials: stored in OS keychain (fallback to `RH_USERNAME`/`RH_PASSWORD` env vars)
+`auth status` reports local brokerage state:
 
-### Official crypto API
+- `session_file_exists`
+- `credentials_present`
+- `session_ready`
+- `detail`
 
-Set either env vars or keychain values:
+`auth verify` performs a live API check and reports:
+
+- `authenticated`
+- `mfa_required`
+- `detail`
+
+Session file:
+
+```text
+~/.config/robinhood-cli/sessions/robinhood_<profile>.json
+```
+
+Credentials:
+
+- macOS: Keychain via `security`
+- Linux: Secret Service via `secret-tool`
+- fallback: `RH_USERNAME` and `RH_PASSWORD`
+
+Official crypto API credentials:
 
 - `RH_CRYPTO_API_KEY`
 - `RH_CRYPTO_PRIVATE_KEY_B64`
 
-Then verify:
-
-```bash
-rhx auth verify
-rhx doctor
-```
-
-## Live mode
+## Live Mode
 
 ```bash
 rhx live status
@@ -76,101 +91,51 @@ rhx live on --yes
 rhx live off
 ```
 
-Order placement is blocked while live mode is off.
-When live mode is enabled, `rhx live on` returns a short-lived `live_confirm_token`; every order placement command must pass it via `--live-confirm-token`.
+Order placement is blocked while live mode is off. When live mode is enabled, `rhx live on` returns a short-lived `live_confirm_token`; every order placement command must pass it with `--live-confirm-token`.
 
-Example:
+## Examples
+
+```bash
+rhx --json quote get AAPL
+rhx --json quote list --symbols AAPL,MSFT,BTC-USD
+rhx --json --fields symbol,quantity positions list
+rhx --json --limit 10 orders list
+rhx --json account summary
+rhx --json portfolio analyze --top 10
+rhx --json options expirations AAPL
+rhx --json options strikes AAPL --expiration-date 2026-12-18 --option-type both
+rhx --json options quotes get --symbol AAPL --expiration-date 2026-12-18 --strike 200 --option-type call
+```
+
+Stock order:
 
 ```bash
 TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
 rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
 ```
 
-## Examples
+Fractional stock orders use notional dollars:
 
 ```bash
-# Machine-readable output
-rhx --json quote get AAPL
-
-# Batch quotes (non-strict: per-symbol errors in `error` field)
-rhx --json quote list --symbols AAPL,MSFT,BTC-USD
-
-# Batch quotes strict mode (fails command if any quote fails)
-rhx --json quote list --symbols AAPL,MSFT --strict
-
-# Compact human-readable output
-rhx --human quote get AAPL
-
-# Full/raw payload view (legacy-style payloads)
-rhx --json --view full positions list
-
-# Trim response fields for agent context efficiency
-rhx --json --fields symbol,quantity positions list
-
-# Limit list payload size
-rhx --json --limit 10 orders list
-
-# Option chain discovery
-rhx --json options expirations AAPL
-rhx --json options strikes AAPL --expiration-date 2026-12-18 --option-type both
-
-# Single option contract quote
-rhx --json options quotes get --symbol AAPL --expiration-date 2026-12-18 --strike 200 --option-type call
-
-# Option chain quote scan with filters/sort/query pagination
-rhx --json options quotes list \
-  --symbol AAPL \
-  --expiration-date 2026-12-18 \
-  --option-type both \
-  --delta-min 0.20 \
-  --delta-max 0.60 \
-  --min-oi 100 \
-  --sort open_interest \
-  --descending \
-  --query-limit 25 \
-  --offset 0
-
-# Option order history filtering + pagination
-rhx --json options orders list \
-  --symbol AAPL \
-  --state filled \
-  --strategy call \
-  --from-date 2025-01-01 \
-  --to-date 2026-02-11 \
-  --sort created_at \
-  --descending \
-  --query-limit 100 \
-  --offset 0
-
-# Portfolio concentration/risk analytics
-rhx --json portfolio analyze --top 10
-
-# Stock order (brokerage)
-TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
-rhx orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
-# Note: stock --qty must be whole shares; use --notional-usd for fractional stock trades.
-
-# Fractional stock order (use notional dollars)
-rhx orders stock place --symbol AAPL --side buy --type market --notional-usd 50 --live-confirm-token "$TOKEN"
-
-# Crypto order (auto routes to official crypto API when credentials exist)
-rhx orders crypto place --symbol BTC-USD --side buy --type limit --amount-in quantity --qty 0.001 --limit-price 40000 --live-confirm-token "$TOKEN"
-
-# Option single-leg order
-rhx options orders place single \
-  --side buy --type limit --position-effect open --credit-or-debit debit \
-  --symbol AAPL --qty 1 --expiration-date 2026-12-18 --strike 200 --option-type call --price 1.25 \
-  --live-confirm-token "$TOKEN"
-
-# Option credit spread
-rhx options orders place credit-spread \
-  --symbol AAPL --qty 1 --price 0.75 --expiration-date 2026-12-18 --option-type call \
-  --short-strike 200 --long-strike 205 --live-confirm-token "$TOKEN"
+rhx --json orders stock place --symbol AAPL --side buy --type market --notional-usd 50 --live-confirm-token "$TOKEN"
 ```
 
-## JSON contract
+Official crypto order:
 
-Every command returns:
+```bash
+rhx --json --provider crypto orders crypto place \
+  --symbol BTC-USD \
+  --side buy \
+  --type limit \
+  --amount-in quantity \
+  --qty 0.001 \
+  --limit-price 40000 \
+  --live-confirm-token "$TOKEN"
+```
+
+## JSON Contract
+
+Every JSON command returns:
 
 ```json
 {
@@ -180,33 +145,12 @@ Every command returns:
   "data": {"live_mode": false},
   "error": null,
   "meta": {
-    "timestamp": "2026-02-09T00:00:00Z",
+    "timestamp": "2026-05-12T00:00:00Z",
     "output_schema": "v3",
-    "view": "summary",
-    "query_total_count": 50,
-    "query_returned_count": 25,
-    "query_truncated": true,
-    "query_offset": 0
+    "view": "summary"
   }
 }
 ```
-
-`query_*` metadata appears on commands that support query-time filtering/pagination.
-
-### v0.3.0 migration note
-
-- `auth status` is now passive and side-effect free.
-- `auth verify` is new and performs active API auth checks.
-- JSON schema marker moved from `v2` to `v3`.
-- `quote list --symbols ... [--strict]` is available for batch quote retrieval.
-- New options market-data commands:
-  - `options expirations`
-  - `options strikes`
-  - `options quotes get`
-  - `options quotes list` with filter/sort/query pagination
-- `options orders list` now supports in-command filtering/sorting/query pagination (`--query-limit`, `--offset`).
-- `portfolio analyze` adds first-party concentration/exposure/risk analytics.
-- Keyring persistence warnings are suppressed unless `--verbose` is enabled.
 
 On failure, `ok=false` and `error.code` is one of:
 
@@ -219,11 +163,12 @@ On failure, `ok=false` and `error.code` is one of:
 - `SAFETY_POLICY_BLOCK`
 - `INTERNAL_ERROR`
 
-## Safety config
+## Safety Config
 
 `~/.config/robinhood-cli/config.toml`:
 
 ```toml
+profile = "default"
 provider_default = "auto"
 
 [safety]
@@ -239,41 +184,22 @@ trading_window = "09:30-16:00"
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest
-```
-
-With coverage:
-
-```bash
-.venv/bin/python -m pytest --cov=src/rhx --cov-report=term-missing
+go test ./...
+cd npm && npm test
 ```
 
 Detailed guidance is in `docs/testing.md`.
 
-## Distribution Channels
+## Distribution
 
-1. Canonical Python package (PyPI): `pipx install rhx`
-2. Python no-install runner: `uvx --from rhx rhx ...`
-3. npm native wrapper for agent ecosystems: `npx rhx ...`
-4. Homebrew tap (optional): `brew install <tap>/rhx`
+The canonical install path is npm:
+
+```bash
+npx rhx --help
+```
 
 Release process is documented in `docs/releasing.md`.
 
-## Security hardening notes
+## Security Note
 
-- Config/session directories are enforced as user-owned and mode `0700`; config/session files are enforced as mode `0600`.
-- Symlinked config/session paths are rejected.
-- Brokerage session pickle is validated before use/unlink.
-- Crypto signing keys must decode to 32-byte or 64-byte Ed25519 private key material.
-
-## Disclaimer
-
-This project uses unofficial Robinhood APIs through `robin_stocks` for non-crypto brokerage features. API behavior can change at any time.
-
-## Security
-
-For vulnerability reporting instructions, see `SECURITY.md`.
-
-## License
-
-MIT. See `LICENSE`.
+This project uses Robinhood APIs directly, including unofficial brokerage endpoints. API behavior can change at any time. Use live mode and safety limits deliberately.

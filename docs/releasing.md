@@ -1,27 +1,29 @@
 # Releasing rhx
 
-This project ships through two channels:
+This project ships through npm:
 
-1. Python package (canonical): PyPI
-2. npm native wrapper (for `npx` workflows): `rhx` + platform packages
+1. Platform packages: `rhx-darwin-arm64`, `rhx-linux-x64`, `rhx-win32-x64`
+2. Entrypoint package: `rhx`
+
+The entrypoint package only locates and executes the platform Go binary. It does not run Python.
 
 ## Prerequisites
 
-1. PyPI trusted publishing configured for this repository.
-2. npm token in GitHub Actions secret `NPM_TOKEN` or npm trusted publishing configured.
-3. `pyproject.toml` version and `npm/package.json` version updated together.
-4. Platform package versions in sync with wrapper package:
+1. npm token in GitHub Actions secret `NPM_TOKEN` or npm trusted publishing configured.
+2. `npm/package.json` version is the release version.
+3. Platform package versions are in sync with the entrypoint package:
    - `npm/platform/rhx-darwin-arm64/package.json`
    - `npm/platform/rhx-linux-x64/package.json`
    - `npm/platform/rhx-win32-x64/package.json`
-5. Branch protection enabled on `main` (PRs + reviews + required checks).
-6. Protected tag pattern `v*` enabled (only maintainers/admins can create release tags).
+4. Branch protection enabled on `main`.
+5. Protected tag pattern `v*` enabled.
 
-## Local release checks
+## Local Release Checks
 
 ```bash
-.venv/bin/python -m pytest --cov=src/rhx --cov-report=term-missing
+go test ./...
 cd npm && npm test
+node scripts/build-native.cjs
 ```
 
 To sync platform package versions automatically:
@@ -30,53 +32,33 @@ To sync platform package versions automatically:
 cd npm && npm run sync:versions
 ```
 
-## Release flow
+## Automated Release
 
-This repository supports both manual and automated release flows.
+On merge/push to `main`, `Release On Main` runs after CI succeeds:
 
-### Automated release (recommended)
+1. Reads version from `npm/package.json`.
+2. Creates/pushes `v<version>` if it does not already exist.
+3. Creates a GitHub Release.
+4. Dispatches `.github/workflows/release-npm.yml`.
 
-On merge/push to `main`, the `Release On Main` workflow runs after `CI` succeeds:
+The npm release workflow builds native binaries on each target runner, stages them into platform packages, publishes platform packages, then publishes the entrypoint package.
 
-1. Reads version from:
-   - `pyproject.toml` (`[project].version`)
-   - `npm/package.json` (`version`)
-2. Verifies versions match.
-3. Creates/pushes `v<version>` tag if it does not already exist.
-4. Creates a GitHub Release for that tag.
-5. Dispatches:
-   - `.github/workflows/release-python.yml`
-   - `.github/workflows/release-npm.yml`
+## Manual Release
 
-If the tag already exists, it exits without publishing.
-
-### Manual release
-
-1. Bump versions:
-   - `pyproject.toml`
-   - `npm/package.json`
-2. Commit + push to `main`.
-3. Create and push tag:
+1. Bump `npm/package.json`.
+2. Run `cd npm && npm run sync:versions`.
+3. Commit and push to `main`.
+4. Create and push the tag:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.3.3
+git push origin v0.3.3
 ```
 
-4. GitHub Actions runs:
-   - `.github/workflows/release-python.yml`
-   - `.github/workflows/release-npm.yml`
-     - Builds native binaries (`darwin-arm64`, `linux-x64`, `win32-x64`)
-     - Publishes platform packages (`rhx-<target>`)
-     - Publishes wrapper package (`rhx`)
+5. GitHub Actions runs `.github/workflows/release-npm.yml`.
 
-Only users with repository write/maintain/admin access can trigger releases.
-
-## Install examples after release
+## Install Example
 
 ```bash
-pipx install rhx
-uvx --from rhx rhx --help
 npx rhx --help
-brew install <your-tap>/rhx
 ```

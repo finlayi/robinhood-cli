@@ -78,65 +78,6 @@ function resolveNativeBinary({
   }
 }
 
-function buildLaunchers(pypiPackage, argv) {
-  return [
-    { command: "uvx", args: ["--from", pypiPackage, "rhx", ...argv] },
-    { command: "pipx", args: ["run", "--spec", pypiPackage, "rhx", ...argv] },
-    { command: "python3", args: ["-m", "pipx", "run", "--spec", pypiPackage, "rhx", ...argv] },
-    { command: "python", args: ["-m", "pipx", "run", "--spec", pypiPackage, "rhx", ...argv] }
-  ];
-}
-
-function runWithLaunchers({
-  argv,
-  env = process.env,
-  spawn = spawnSync,
-  stderr = process.stderr
-}) {
-  const pypiPackage = env.RHX_PYPI_PACKAGE || "rhx";
-  const launchers = buildLaunchers(pypiPackage, argv);
-  let sawRunnableLauncher = false;
-  let lastExitCode = 1;
-
-  for (const launcher of launchers) {
-    const result = spawn(launcher.command, launcher.args, { stdio: "inherit", env });
-
-    if (result.error && result.error.code === "ENOENT") {
-      continue;
-    }
-    if (result.error) {
-      stderr.write(`rhx launcher failed via ${launcher.command}: ${result.error.message}\n`);
-      sawRunnableLauncher = true;
-      lastExitCode = 1;
-      continue;
-    }
-    if (typeof result.status === "number") {
-      if (result.status === 0) {
-        return 0;
-      }
-      sawRunnableLauncher = true;
-      lastExitCode = result.status;
-      continue;
-    }
-    if (result.signal) {
-      stderr.write(`rhx launcher terminated by signal ${result.signal}\n`);
-      return 1;
-    }
-    sawRunnableLauncher = true;
-    lastExitCode = 1;
-  }
-
-  if (sawRunnableLauncher) {
-    stderr.write("All available launchers failed.\n");
-    stderr.write("Install or repair uv/pipx, then retry `npx rhx --help`.\n");
-    return lastExitCode;
-  }
-
-  stderr.write("Unable to find a Python tool launcher (uvx/pipx).\n");
-  stderr.write("Install uv or pipx, then retry `npx rhx --help`.\n");
-  return 1;
-}
-
 function runRhx({
   argv,
   env = process.env,
@@ -144,43 +85,38 @@ function runRhx({
   stderr = process.stderr,
   platform = process.platform,
   arch = process.arch,
-  resolveNative = resolveNativeBinary,
-  runLaunchers = runWithLaunchers
+  resolveNative = resolveNativeBinary
 }) {
   const native = resolveNative({ platform, arch });
 
-  if (native.supported) {
-    if (!native.binaryPath) {
-      stderr.write(`rhx native runtime package missing: ${native.packageName}\n`);
-      stderr.write("Reinstall with optional dependencies enabled, then retry `npx rhx --help`.\n");
-      stderr.write("If you need a Python fallback, set RHX_ENABLE_PYTHON_FALLBACK=1.\n");
-      if (env.RHX_ENABLE_PYTHON_FALLBACK !== "1") {
-        return 1;
-      }
-    } else {
-      const result = spawn(native.binaryPath, argv, { stdio: "inherit", env });
-      if (result.error) {
-        stderr.write(`rhx native launcher failed: ${result.error.message}\n`);
-        return 1;
-      }
-      if (typeof result.status === "number") {
-        return result.status;
-      }
-      if (result.signal) {
-        stderr.write(`rhx native launcher terminated by signal ${result.signal}\n`);
-        return 1;
-      }
-      return 1;
-    }
+  if (!native.supported) {
+    stderr.write(`rhx native runtime is not available for ${native.key}.\n`);
+    return 1;
   }
 
-  return runLaunchers({ argv, env, spawn, stderr });
+  if (!native.binaryPath) {
+    stderr.write(`rhx native runtime package missing: ${native.packageName}\n`);
+    stderr.write("Reinstall with optional dependencies enabled, then retry `npx rhx --help`.\n");
+    return 1;
+  }
+
+  const result = spawn(native.binaryPath, argv, { stdio: "inherit", env });
+  if (result.error) {
+    stderr.write(`rhx native launcher failed: ${result.error.message}\n`);
+    return 1;
+  }
+  if (typeof result.status === "number") {
+    return result.status;
+  }
+  if (result.signal) {
+    stderr.write(`rhx native launcher terminated by signal ${result.signal}\n`);
+    return 1;
+  }
+  return 1;
 }
 
 module.exports = {
   NATIVE_TARGETS,
   resolveNativeBinary,
-  runRhx,
-  buildLaunchers,
-  runWithLaunchers
+  runRhx
 };
