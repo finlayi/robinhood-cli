@@ -114,10 +114,17 @@ TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
 rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
 ```
 
-Fractional stock orders use notional dollars:
+Fractional stock market orders can use share quantity or notional dollars:
 
 ```bash
+rhx --json orders stock place --symbol AAPL --side sell --type market --qty 0.123456 --live-confirm-token "$TOKEN"
 rhx --json orders stock place --symbol AAPL --side buy --type market --notional-usd 50 --live-confirm-token "$TOKEN"
+```
+
+Sell the current sellable stock position for a symbol:
+
+```bash
+rhx --json orders stock sell-all --symbol AAPL --live-confirm-token "$TOKEN"
 ```
 
 Official crypto order:

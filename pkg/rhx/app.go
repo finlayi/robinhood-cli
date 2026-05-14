@@ -479,6 +479,9 @@ func (rt *appRuntime) dispatchOrders(ctx context.Context, args []string) int {
 		if len(args) >= 2 && args[1] == "place" {
 			return rt.placeStock(ctx, args[2:])
 		}
+		if len(args) >= 2 && args[1] == "sell-all" {
+			return rt.sellAllStock(ctx, args[2:])
+		}
 	case "crypto":
 		if len(args) >= 2 && args[1] == "place" {
 			return rt.placeCrypto(ctx, args[2:])
@@ -492,11 +495,13 @@ func (rt *appRuntime) placeStock(ctx context.Context, args []string) int {
 	if err != nil {
 		return rt.commandError("orders stock place", "brokerage", err)
 	}
+	quantityRaw := strings.TrimSpace(flags.Value("qty"))
 	intent := StockOrderIntent{
 		Symbol:        strings.ToUpper(flags.Value("symbol")),
 		Side:          strings.ToLower(flags.Value("side")),
 		Type:          valueOrDefault(strings.ToLower(flags.Value("type")), "market"),
-		Quantity:      parseFloatPtr(flags.Value("qty")),
+		Quantity:      parseFloatPtr(quantityRaw),
+		QuantityRaw:   quantityRaw,
 		NotionalUSD:   parseFloatPtr(flags.Value("notional-usd")),
 		LimitPrice:    parseFloatPtr(flags.Value("limit-price")),
 		StopPrice:     parseFloatPtr(flags.Value("stop-price")),
@@ -510,13 +515,52 @@ func (rt *appRuntime) placeStock(ctx context.Context, args []string) int {
 		if err := rt.safety.requireLiveAuthorization(flags.Value("live-confirm-token")); err != nil {
 			return nil, nil, err
 		}
-		if err := rt.safety.enforce(intent.Symbol, estimateStockIntent(intent)); err != nil {
+		estimated, err := rt.brokerage.estimateStockOrderNotional(ctx, intent)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := rt.safety.enforce(intent.Symbol, estimated); err != nil {
 			return nil, nil, err
 		}
 		result, estimated, err := rt.brokerage.placeStockOrder(ctx, intent)
 		if err != nil {
 			return nil, nil, err
 		}
+		return result, nil, rt.safety.recordNotional(estimated)
+	})
+}
+
+func (rt *appRuntime) sellAllStock(ctx context.Context, args []string) int {
+	flags, err := parseCommandFlags(args, nil)
+	if err != nil {
+		return rt.commandError("orders stock sell-all", "brokerage", err)
+	}
+	symbol := strings.ToUpper(flags.Value("symbol"))
+	timeInForce := valueOrDefault(strings.ToLower(flags.Value("time-in-force")), "gfd")
+	return rt.run("orders stock sell-all", "brokerage", func() (any, map[string]any, error) {
+		if symbol == "" {
+			return nil, nil, newError(ErrorValidation, "--symbol is required")
+		}
+		if err := rt.safety.requireLiveAuthorization(flags.Value("live-confirm-token")); err != nil {
+			return nil, nil, err
+		}
+		intent, position, err := rt.brokerage.sellAllStockIntent(ctx, symbol, timeInForce)
+		if err != nil {
+			return nil, nil, err
+		}
+		estimated, err := rt.brokerage.estimateStockOrderNotional(ctx, intent)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := rt.safety.enforce(intent.Symbol, estimated); err != nil {
+			return nil, nil, err
+		}
+		result, estimated, err := rt.brokerage.placeStockOrder(ctx, intent)
+		if err != nil {
+			return nil, nil, err
+		}
+		result["quantity"] = intent.QuantityRaw
+		result["source_position"] = position
 		return result, nil, rt.safety.recordNotional(estimated)
 	})
 }
@@ -684,8 +728,8 @@ func validateStockIntent(intent StockOrderIntent) error {
 	if intent.Quantity == nil && intent.NotionalUSD == nil {
 		return newError(ErrorValidation, "Either --qty or --notional-usd is required")
 	}
-	if intent.Quantity != nil && *intent.Quantity != float64(int64(*intent.Quantity)) {
-		return newError(ErrorValidation, "Fractional stock quantities via --qty are not supported. Use --notional-usd for fractional stock orders.")
+	if intent.Quantity != nil && isFractionalStockQuantity(intent) && intent.Type != "market" {
+		return newError(ErrorValidation, "Fractional stock quantities via --qty are only supported for market orders.")
 	}
 	if intent.Type == "limit" && intent.LimitPrice == nil {
 		return newError(ErrorValidation, "--limit-price is required for limit orders")
@@ -694,6 +738,13 @@ func validateStockIntent(intent StockOrderIntent) error {
 		return newError(ErrorValidation, "--limit-price and --stop-price are required for stop_limit orders")
 	}
 	return nil
+}
+
+func isFractionalStockQuantity(intent StockOrderIntent) bool {
+	if intent.Quantity == nil {
+		return false
+	}
+	return *intent.Quantity != float64(int64(*intent.Quantity))
 }
 
 func estimateStockIntent(intent StockOrderIntent) float64 {
@@ -886,6 +937,7 @@ Commands:
   quote list --symbols AAPL,MSFT
   orders list|get|cancel
   orders stock place --symbol AAPL --side buy --qty 1 --live-confirm-token TOKEN
+  orders stock sell-all --symbol AAPL --live-confirm-token TOKEN
   orders crypto place --symbol BTC-USD --side buy --qty 0.001 --live-confirm-token TOKEN
   options expirations AAPL
   options strikes AAPL --expiration-date 2026-12-18 --option-type both

@@ -73,3 +73,63 @@ func TestEstimateStockIntent(t *testing.T) {
 		t.Fatalf("estimate = %v, want 25", got)
 	}
 }
+
+func TestValidateStockIntentAllowsFractionalMarketQuantity(t *testing.T) {
+	qty := 0.123456
+	err := validateStockIntent(StockOrderIntent{
+		Symbol:      "AAPL",
+		Side:        "sell",
+		Type:        "market",
+		Quantity:    &qty,
+		QuantityRaw: "0.123456",
+	})
+	if err != nil {
+		t.Fatalf("validateStockIntent returned error: %v", err)
+	}
+}
+
+func TestValidateStockIntentRejectsFractionalLimitQuantity(t *testing.T) {
+	qty := 0.123456
+	limit := 200.0
+	err := validateStockIntent(StockOrderIntent{
+		Symbol:      "AAPL",
+		Side:        "sell",
+		Type:        "limit",
+		Quantity:    &qty,
+		QuantityRaw: "0.123456",
+		LimitPrice:  &limit,
+	})
+	if err == nil {
+		t.Fatal("validateStockIntent allowed fractional limit quantity")
+	}
+}
+
+func TestSellableStockQuantityPreservesExactQuantity(t *testing.T) {
+	got, gotFloat, err := sellableStockQuantity(map[string]any{
+		"quantity": "0.123456",
+	})
+	if err != nil {
+		t.Fatalf("sellableStockQuantity returned error: %v", err)
+	}
+	if got != "0.123456" {
+		t.Fatalf("quantity = %q, want 0.123456", got)
+	}
+	if gotFloat != 0.123456 {
+		t.Fatalf("quantity float = %v, want 0.123456", gotFloat)
+	}
+}
+
+func TestSellableStockQuantitySubtractsHeldShares(t *testing.T) {
+	got, _, err := sellableStockQuantity(map[string]any{
+		"quantity":                       "1.000000",
+		"shares_held_for_sells":          "0.250000",
+		"shares_held_for_stock_grants":   "0.100000",
+		"shares_held_for_options_events": "0.000000",
+	})
+	if err != nil {
+		t.Fatalf("sellableStockQuantity returned error: %v", err)
+	}
+	if got != "0.65" {
+		t.Fatalf("quantity = %q, want 0.65", got)
+	}
+}

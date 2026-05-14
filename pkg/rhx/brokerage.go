@@ -3,6 +3,7 @@ package rhx
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"net/url"
 	"strconv"
 	"strings"
@@ -97,6 +98,44 @@ func (p *BrokerageProvider) positions(ctx context.Context) ([]map[string]any, er
 		}
 	}
 	return rows, nil
+}
+
+func (p *BrokerageProvider) sellAllStockIntent(ctx context.Context, symbol string, timeInForce string) (StockOrderIntent, map[string]any, error) {
+	if err := p.ensure(ctx); err != nil {
+		return StockOrderIntent{}, nil, err
+	}
+	instrument, err := p.instrument(ctx, symbol)
+	if err != nil {
+		return StockOrderIntent{}, nil, err
+	}
+	instrumentURL, _ := instrument["url"].(string)
+	if instrumentURL == "" {
+		return StockOrderIntent{}, nil, wrapError(ErrorBrokerRejected, "No instrument URL returned for %s", symbol)
+	}
+	stockRows, err := p.auth.Client.getAllPages(ctx, robinhoodAPIBase+"/positions/", map[string]string{"nonzero": "true"})
+	if err != nil {
+		return StockOrderIntent{}, nil, err
+	}
+	for _, row := range stockRows {
+		rowInstrument, _ := row["instrument"].(string)
+		rowSymbol, _ := row["symbol"].(string)
+		if rowInstrument != instrumentURL && !strings.EqualFold(rowSymbol, symbol) {
+			continue
+		}
+		quantity, quantityFloat, err := sellableStockQuantity(row)
+		if err != nil {
+			return StockOrderIntent{}, nil, err
+		}
+		return StockOrderIntent{
+			Symbol:      strings.ToUpper(symbol),
+			Side:        "sell",
+			Type:        "market",
+			Quantity:    &quantityFloat,
+			QuantityRaw: quantity,
+			TimeInForce: timeInForce,
+		}, row, nil
+	}
+	return StockOrderIntent{}, nil, wrapError(ErrorBrokerRejected, "No nonzero stock position found for %s", symbol)
 }
 
 func (p *BrokerageProvider) quote(ctx context.Context, symbol string) (map[string]any, error) {
@@ -282,6 +321,26 @@ func (p *BrokerageProvider) cancelOrder(ctx context.Context, orderID string, ass
 	return map[string]any{"asset_type": resultType, "result": data}, nil
 }
 
+func (p *BrokerageProvider) estimateStockOrderNotional(ctx context.Context, intent StockOrderIntent) (float64, error) {
+	estimated := estimateStockIntent(intent)
+	if estimated > 0 {
+		return estimated, nil
+	}
+	if intent.Quantity == nil {
+		return 0, nil
+	}
+	quoteRow, err := p.quote(ctx, intent.Symbol)
+	if err != nil {
+		return 0, err
+	}
+	quote := asMap(quoteRow["quote"])
+	price := stockOrderPrice(intent, quote)
+	if price <= 0 {
+		return 0, newError(ErrorBrokerRejected, "Cannot estimate stock order notional without a quote price")
+	}
+	return *intent.Quantity * price, nil
+}
+
 func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrderIntent) (map[string]any, float64, error) {
 	if err := p.ensure(ctx); err != nil {
 		return nil, 0, err
@@ -301,20 +360,9 @@ func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrd
 	quote := asMap(quoteRow["quote"])
 	ask := floatFromAny(quote["ask_price"])
 	bid := floatFromAny(quote["bid_price"])
-	price := floatFromAny(quote["last_trade_price"])
-	if intent.Side == "buy" && ask > 0 {
-		price = ask
-	}
-	if intent.Side == "sell" && bid > 0 {
-		price = bid
-	}
-	if intent.Type == "limit" && intent.LimitPrice != nil {
-		price = *intent.LimitPrice
-	}
-	if intent.Type == "stop_limit" && intent.LimitPrice != nil {
-		price = *intent.LimitPrice
-	}
+	price := stockOrderPrice(intent, quote)
 	quantity := intent.Quantity
+	quantityPayload := stockQuantityPayload(intent)
 	estimated := 0.0
 	if intent.NotionalUSD != nil {
 		estimated = *intent.NotionalUSD
@@ -323,6 +371,7 @@ func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrd
 		}
 		qty := roundPrice(*intent.NotionalUSD / price)
 		quantity = &qty
+		quantityPayload = formatFloat(qty)
 	} else if quantity != nil {
 		estimated = *quantity * price
 	}
@@ -350,7 +399,7 @@ func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrd
 		"ask_price":          roundPrice(ask),
 		"bid_ask_timestamp":  time.Now().Format("2006-01-02 15:04:05.000000"),
 		"bid_price":          roundPrice(bid),
-		"quantity":           *quantity,
+		"quantity":           quantityPayload,
 		"ref_id":             randomDeviceToken(),
 		"type":               orderType,
 		"stop_price":         stopPrice,
@@ -618,6 +667,106 @@ func firstString(row map[string]any, keys ...string) string {
 	return ""
 }
 
+func stockOrderPrice(intent StockOrderIntent, quote map[string]any) float64 {
+	price := floatFromAny(quote["last_trade_price"])
+	if intent.Side == "buy" {
+		if ask := floatFromAny(quote["ask_price"]); ask > 0 {
+			price = ask
+		}
+	}
+	if intent.Side == "sell" {
+		if bid := floatFromAny(quote["bid_price"]); bid > 0 {
+			price = bid
+		}
+	}
+	if intent.Type == "limit" && intent.LimitPrice != nil {
+		price = *intent.LimitPrice
+	}
+	if intent.Type == "stop_limit" && intent.LimitPrice != nil {
+		price = *intent.LimitPrice
+	}
+	return price
+}
+
+func stockQuantityPayload(intent StockOrderIntent) any {
+	if intent.QuantityRaw != "" {
+		return intent.QuantityRaw
+	}
+	if intent.Quantity != nil {
+		return formatFloat(*intent.Quantity)
+	}
+	return nil
+}
+
+func sellableStockQuantity(row map[string]any) (string, float64, error) {
+	quantity, quantityRaw, ok := decimalRatFromAny(row["quantity"])
+	if !ok {
+		return "", 0, newError(ErrorBrokerRejected, "Position is missing a quantity")
+	}
+	sellable := new(big.Rat).Set(quantity)
+	for _, field := range []string{
+		"shares_held_for_sells",
+		"shares_held_for_options_collateral",
+		"shares_held_for_options_events",
+		"shares_held_for_stock_grants",
+	} {
+		if held, _, ok := decimalRatFromAny(row[field]); ok {
+			sellable.Sub(sellable, held)
+		}
+	}
+	if sellable.Sign() <= 0 {
+		return "", 0, newError(ErrorBrokerRejected, "No sellable shares are available for this position")
+	}
+	out := quantityRaw
+	if sellable.Cmp(quantity) != 0 {
+		out = formatDecimalRat(sellable, 9)
+	}
+	value, err := strconv.ParseFloat(out, 64)
+	if err != nil || value <= 0 {
+		return "", 0, newError(ErrorBrokerRejected, "No sellable shares are available for this position")
+	}
+	return out, value, nil
+}
+
+func decimalRatFromAny(value any) (*big.Rat, string, bool) {
+	raw := decimalStringFromAny(value)
+	if raw == "" {
+		return nil, "", false
+	}
+	rat, ok := new(big.Rat).SetString(raw)
+	if !ok {
+		return nil, "", false
+	}
+	return rat, raw, true
+}
+
+func decimalStringFromAny(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(typed)
+	case jsonNumber:
+		return string(typed)
+	default:
+		return ""
+	}
+}
+
+func formatDecimalRat(value *big.Rat, scale int) string {
+	out := value.FloatString(scale)
+	out = strings.TrimRight(out, "0")
+	out = strings.TrimRight(out, ".")
+	if out == "" {
+		return "0"
+	}
+	return out
+}
+
 func floatFromAny(value any) float64 {
 	switch typed := value.(type) {
 	case float64:
@@ -666,6 +815,7 @@ type StockOrderIntent struct {
 	Side          string
 	Type          string
 	Quantity      *float64
+	QuantityRaw   string
 	NotionalUSD   *float64
 	LimitPrice    *float64
 	StopPrice     *float64
