@@ -81,7 +81,7 @@ func defaultConfig(profile string, configPath string) RuntimeConfig {
 
 func loadRuntimeConfig(configPath string, profile string) (RuntimeConfig, error) {
 	cfg := defaultConfig(profile, configPath)
-	if err := secureDir(filepath.Dir(cfg.Paths.ConfigPath)); err != nil {
+	if err := secureConfigParent(cfg.Paths.ConfigPath); err != nil {
 		return cfg, err
 	}
 	if err := secureDir(filepath.Dir(cfg.Paths.StatePath)); err != nil {
@@ -175,7 +175,7 @@ func parseSafetyField(s *SafetyConfig, key string, value string) {
 }
 
 func saveRuntimeConfig(cfg RuntimeConfig) error {
-	if err := secureDir(filepath.Dir(cfg.Paths.ConfigPath)); err != nil {
+	if err := secureConfigParent(cfg.Paths.ConfigPath); err != nil {
 		return err
 	}
 	var b strings.Builder
@@ -250,6 +250,34 @@ func formatTomlStringArray(values []string) string {
 		quoted = append(quoted, strconv.Quote(strings.ToUpper(value)))
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func secureConfigParent(configPath string) error {
+	parent := filepath.Dir(configPath)
+	if filepath.Clean(configPath) == filepath.Clean(defaultConfigPath()) {
+		return secureDir(parent)
+	}
+	return ensureConfigParent(parent)
+}
+
+func ensureConfigParent(path string) error {
+	if path == "" || path == "." {
+		return nil
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return os.MkdirAll(path, 0o700)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return wrapError(ErrorAuthRequired, "Refusing symlinked directory: %s", path)
+	}
+	if !info.IsDir() {
+		return wrapError(ErrorAuthRequired, "Path is not a directory: %s", path)
+	}
+	return nil
 }
 
 func secureDir(path string) error {

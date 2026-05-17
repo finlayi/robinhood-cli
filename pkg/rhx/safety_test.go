@@ -53,3 +53,29 @@ func TestSafetyEnforceSymbolPolicy(t *testing.T) {
 		t.Fatalf("enforce oversized notional succeeded")
 	}
 }
+
+func TestSafetyReserveReloadsStateBeforeDailyLimit(t *testing.T) {
+	maxDaily := 100.0
+	cfg := &SafetyConfig{
+		LiveMode:         true,
+		MaxDailyNotional: &maxDaily,
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	first, err := newSafetyEngine(path, cfg)
+	if err != nil {
+		t.Fatalf("newSafetyEngine(first) returned error: %v", err)
+	}
+	second, err := newSafetyEngine(path, cfg)
+	if err != nil {
+		t.Fatalf("newSafetyEngine(second) returned error: %v", err)
+	}
+
+	reservation, err := first.reserveNotional("AAPL", 60)
+	if err != nil {
+		t.Fatalf("first reserveNotional returned error: %v", err)
+	}
+	defer reservation.release()
+	if _, err := second.reserveNotional("AAPL", 60); err == nil {
+		t.Fatalf("second reserveNotional succeeded with stale daily state")
+	}
+}

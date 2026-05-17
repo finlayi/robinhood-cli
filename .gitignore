@@ -5,6 +5,7 @@ __pycache__/
 .coverage
 htmlcov/
 *.egg-info/
+.clawpatch/
 node_modules/
 npm-debug.log*
 .env

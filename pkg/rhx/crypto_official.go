@@ -18,14 +18,15 @@ type OfficialCryptoProvider struct {
 }
 
 type CryptoOrderIntent struct {
-	Symbol      string
-	Side        string
-	Type        string
-	AmountIn    string
-	Quantity    *float64
-	NotionalUSD *float64
-	LimitPrice  *float64
-	TimeInForce string
+	Symbol            string
+	Side              string
+	Type              string
+	AmountIn          string
+	Quantity          *float64
+	NotionalUSD       *float64
+	LimitPrice        *float64
+	TimeInForce       string
+	EstimatedNotional float64
 }
 
 func newOfficialCryptoProvider(auth *AuthManager) *OfficialCryptoProvider {
@@ -95,7 +96,7 @@ func (p *OfficialCryptoProvider) placeOrder(ctx context.Context, intent CryptoOr
 		"type":            intent.Type,
 		"time_in_force":   intent.TimeInForce,
 	}
-	estimated := 0.0
+	estimated := intent.EstimatedNotional
 	if intent.Type == "market" {
 		if intent.AmountIn == "quantity" {
 			if intent.Quantity == nil {
@@ -106,7 +107,9 @@ func (p *OfficialCryptoProvider) placeOrder(ctx context.Context, intent CryptoOr
 			if intent.NotionalUSD == nil {
 				return nil, 0, newError(ErrorValidation, "--notional-usd is required when --amount-in price")
 			}
-			estimated = *intent.NotionalUSD
+			if estimated <= 0 {
+				estimated = *intent.NotionalUSD
+			}
 			payload["market_order_config"] = map[string]any{"quote_amount": formatFloat(*intent.NotionalUSD)}
 		}
 	} else {
@@ -117,13 +120,17 @@ func (p *OfficialCryptoProvider) placeOrder(ctx context.Context, intent CryptoOr
 			if intent.Quantity == nil {
 				return nil, 0, newError(ErrorValidation, "--qty is required when --amount-in quantity")
 			}
-			estimated = *intent.Quantity * *intent.LimitPrice
+			if estimated <= 0 {
+				estimated = *intent.Quantity * *intent.LimitPrice
+			}
 			payload["limit_order_config"] = map[string]any{"asset_quantity": formatFloat(*intent.Quantity), "limit_price": formatFloat(*intent.LimitPrice)}
 		} else {
 			if intent.NotionalUSD == nil {
 				return nil, 0, newError(ErrorValidation, "--notional-usd is required when --amount-in price")
 			}
-			estimated = *intent.NotionalUSD
+			if estimated <= 0 {
+				estimated = *intent.NotionalUSD
+			}
 			payload["limit_order_config"] = map[string]any{"quote_amount": formatFloat(*intent.NotionalUSD), "limit_price": formatFloat(*intent.LimitPrice)}
 		}
 	}

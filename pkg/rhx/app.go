@@ -399,7 +399,6 @@ func (rt *appRuntime) dispatchQuote(ctx context.Context, args []string) int {
 				var err error
 				if provider == "crypto" {
 					raw, err = rt.crypto.quote(ctx, symbol)
-					raw["asset_type"] = "crypto"
 				} else {
 					raw, err = rt.brokerage.quote(ctx, symbol)
 				}
@@ -409,6 +408,12 @@ func (rt *appRuntime) dispatchQuote(ctx context.Context, args []string) int {
 					}
 					rows = append(rows, map[string]any{"symbol": symbol, "error": err.Error(), "provider": provider})
 					continue
+				}
+				if raw == nil {
+					raw = map[string]any{}
+				}
+				if provider == "crypto" {
+					raw["asset_type"] = "crypto"
 				}
 				rows = append(rows, flattenQuote(raw, provider))
 			}
@@ -519,14 +524,16 @@ func (rt *appRuntime) placeStock(ctx context.Context, args []string) int {
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := rt.safety.enforce(intent.Symbol, estimated); err != nil {
-			return nil, nil, err
-		}
-		result, estimated, err := rt.brokerage.placeStockOrder(ctx, intent)
+		reservation, err := rt.safety.reserveNotional(intent.Symbol, estimated)
 		if err != nil {
 			return nil, nil, err
 		}
-		return result, nil, rt.safety.recordNotional(estimated)
+		result, _, err := rt.brokerage.placeStockOrder(ctx, intent)
+		if err != nil {
+			_ = reservation.release()
+			return nil, nil, err
+		}
+		return result, nil, nil
 	})
 }
 
@@ -552,16 +559,18 @@ func (rt *appRuntime) sellAllStock(ctx context.Context, args []string) int {
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := rt.safety.enforce(intent.Symbol, estimated); err != nil {
+		reservation, err := rt.safety.reserveNotional(intent.Symbol, estimated)
+		if err != nil {
 			return nil, nil, err
 		}
-		result, estimated, err := rt.brokerage.placeStockOrder(ctx, intent)
+		result, _, err := rt.brokerage.placeStockOrder(ctx, intent)
 		if err != nil {
+			_ = reservation.release()
 			return nil, nil, err
 		}
 		result["quantity"] = intent.QuantityRaw
 		result["source_position"] = position
-		return result, nil, rt.safety.recordNotional(estimated)
+		return result, nil, nil
 	})
 }
 
@@ -582,20 +591,30 @@ func (rt *appRuntime) placeCrypto(ctx context.Context, args []string) int {
 	}
 	provider := rt.orderProvider("crypto")
 	return rt.run("orders crypto place", provider, func() (any, map[string]any, error) {
+		if err := validateCryptoIntent(intent); err != nil {
+			return nil, nil, err
+		}
 		if err := rt.safety.requireLiveAuthorization(flags.Value("live-confirm-token")); err != nil {
 			return nil, nil, err
 		}
 		if provider != "crypto" {
 			return nil, nil, newError(ErrorValidation, "crypto order placement requires official crypto API credentials or --provider crypto")
 		}
-		if err := rt.safety.enforce(intent.Symbol, estimateCryptoIntent(intent)); err != nil {
-			return nil, nil, err
-		}
-		result, estimated, err := rt.crypto.placeOrder(ctx, intent)
+		estimated, err := rt.estimateCryptoOrderNotional(ctx, intent)
 		if err != nil {
 			return nil, nil, err
 		}
-		return result, nil, rt.safety.recordNotional(estimated)
+		intent.EstimatedNotional = estimated
+		reservation, err := rt.safety.reserveNotional(intent.Symbol, estimated)
+		if err != nil {
+			return nil, nil, err
+		}
+		result, _, err := rt.crypto.placeOrder(ctx, intent)
+		if err != nil {
+			_ = reservation.release()
+			return nil, nil, err
+		}
+		return result, nil, nil
 	})
 }
 
@@ -768,6 +787,95 @@ func estimateCryptoIntent(intent CryptoOrderIntent) float64 {
 		return *intent.Quantity * *intent.LimitPrice
 	}
 	return 0
+}
+
+func validateCryptoIntent(intent CryptoOrderIntent) error {
+	if intent.Symbol == "" {
+		return newError(ErrorValidation, "--symbol is required")
+	}
+	if intent.Side != "buy" && intent.Side != "sell" {
+		return newError(ErrorValidation, "--side must be buy or sell")
+	}
+	if intent.Type != "market" && intent.Type != "limit" {
+		return newError(ErrorValidation, "--type must be market or limit")
+	}
+	if intent.AmountIn != "quantity" && intent.AmountIn != "price" {
+		return newError(ErrorValidation, "--amount-in must be quantity or price")
+	}
+	if intent.AmountIn == "quantity" {
+		if intent.Quantity == nil || *intent.Quantity <= 0 {
+			return newError(ErrorValidation, "A positive --qty is required when --amount-in quantity")
+		}
+		if intent.NotionalUSD != nil {
+			return newError(ErrorValidation, "--notional-usd cannot be combined with --amount-in quantity")
+		}
+	} else {
+		if intent.NotionalUSD == nil || *intent.NotionalUSD <= 0 {
+			return newError(ErrorValidation, "A positive --notional-usd is required when --amount-in price")
+		}
+		if intent.Quantity != nil {
+			return newError(ErrorValidation, "--qty cannot be combined with --amount-in price")
+		}
+	}
+	if intent.Type == "market" && intent.LimitPrice != nil {
+		return newError(ErrorValidation, "--limit-price cannot be used with market crypto orders")
+	}
+	if intent.Type == "limit" {
+		if intent.LimitPrice == nil || *intent.LimitPrice <= 0 {
+			return newError(ErrorValidation, "A positive --limit-price is required for limit crypto orders")
+		}
+	}
+	return nil
+}
+
+func (rt *appRuntime) estimateCryptoOrderNotional(ctx context.Context, intent CryptoOrderIntent) (float64, error) {
+	estimated := estimateCryptoIntent(intent)
+	if estimated > 0 {
+		return estimated, nil
+	}
+	if intent.Type != "market" || intent.AmountIn != "quantity" || intent.Quantity == nil {
+		return 0, newError(ErrorValidation, "Cannot estimate crypto order notional")
+	}
+	quoteRow, err := rt.crypto.quote(ctx, intent.Symbol)
+	if err != nil {
+		return 0, err
+	}
+	price := cryptoSafetyPrice(asMap(quoteRow["quote"]))
+	if price <= 0 {
+		return 0, newError(ErrorBrokerRejected, "Cannot estimate crypto order notional without a quote price")
+	}
+	return *intent.Quantity * price, nil
+}
+
+func cryptoSafetyPrice(quote map[string]any) float64 {
+	price := maxCryptoPrice(quote)
+	for _, row := range resultsRows(quote) {
+		if rowPrice := maxCryptoPrice(row); rowPrice > price {
+			price = rowPrice
+		}
+	}
+	return price
+}
+
+func maxCryptoPrice(row map[string]any) float64 {
+	price := 0.0
+	for _, key := range []string{
+		"ask_inclusive_of_buy_spread",
+		"bid_inclusive_of_sell_spread",
+		"ask_price",
+		"bid_price",
+		"ask",
+		"bid",
+		"mark_price",
+		"mark",
+		"last_trade_price",
+		"price",
+	} {
+		if candidate := floatFromAny(row[key]); candidate > price {
+			price = candidate
+		}
+	}
+	return price
 }
 
 func parseFloatPtr(raw string) *float64 {

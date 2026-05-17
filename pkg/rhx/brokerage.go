@@ -259,7 +259,11 @@ func (p *BrokerageProvider) listOrders(ctx context.Context, assetType string, op
 	}
 	if assetType == "" || assetType == "option" {
 		optionRows, err := p.auth.Client.getAllPages(ctx, robinhoodAPIBase+"/options/orders/", nil)
-		if err == nil {
+		if err != nil {
+			if assetType == "option" {
+				return nil, err
+			}
+		} else {
 			for _, row := range optionRows {
 				if openOnly && row["cancel_url"] == nil {
 					continue
@@ -271,7 +275,11 @@ func (p *BrokerageProvider) listOrders(ctx context.Context, assetType string, op
 	}
 	if assetType == "" || assetType == "crypto" {
 		cryptoRows, err := p.auth.Client.getAllPages(ctx, robinhoodCryptoBase+"/orders/", nil)
-		if err == nil {
+		if err != nil {
+			if assetType == "crypto" {
+				return nil, err
+			}
+		} else {
 			for _, row := range cryptoRows {
 				if openOnly && row["cancel_url"] == nil {
 					continue

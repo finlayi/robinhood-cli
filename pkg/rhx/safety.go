@@ -29,21 +29,46 @@ type SafetyEngine struct {
 	State  SafetyState
 }
 
+type SafetyReservation struct {
+	engine   *SafetyEngine
+	value    float64
+	released bool
+}
+
 func newSafetyEngine(path string, config *SafetyConfig) (*SafetyEngine, error) {
 	engine := &SafetyEngine{Config: config, Path: path, State: SafetyState{DailyNotional: map[string]float64{}}}
 	if err := secureDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &engine.State)
-	}
-	if engine.State.DailyNotional == nil {
-		engine.State.DailyNotional = map[string]float64{}
+	if err := engine.load(); err != nil {
+		return nil, err
 	}
 	return engine, nil
 }
 
+func (s *SafetyEngine) load() error {
+	s.State = SafetyState{DailyNotional: map[string]float64{}}
+	if s.Path == "" {
+		return nil
+	}
+	if data, err := os.ReadFile(s.Path); err == nil {
+		_ = json.Unmarshal(data, &s.State)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if s.State.DailyNotional == nil {
+		s.State.DailyNotional = map[string]float64{}
+	}
+	return nil
+}
+
 func (s *SafetyEngine) save() error {
+	return s.withStateLock(func() error {
+		return s.saveUnlocked()
+	})
+}
+
+func (s *SafetyEngine) saveUnlocked() error {
 	if err := secureDir(filepath.Dir(s.Path)); err != nil {
 		return err
 	}
@@ -55,6 +80,38 @@ func (s *SafetyEngine) save() error {
 		return err
 	}
 	return secureFile(s.Path)
+}
+
+func (s *SafetyEngine) withStateLock(fn func() error) error {
+	if s.Path == "" {
+		return fn()
+	}
+	if err := secureDir(filepath.Dir(s.Path)); err != nil {
+		return err
+	}
+	lockPath := s.Path + ".lock"
+	deadline := time.Now().UTC().Add(10 * time.Second)
+	for {
+		lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_, _ = lock.WriteString(strconv.Itoa(os.Getpid()) + "\n")
+			_ = lock.Close()
+			defer os.Remove(lockPath)
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return err
+		}
+		now := time.Now().UTC()
+		if info, statErr := os.Stat(lockPath); statErr == nil && now.Sub(info.ModTime()) > 30*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if now.After(deadline) {
+			return newError(ErrorSafetyPolicy, "Timed out waiting for safety state lock")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func (s *SafetyEngine) liveModeEnabled() bool {
@@ -71,16 +128,26 @@ func (s *SafetyEngine) issueLiveUnlock(ttlSeconds int) (string, int64, error) {
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	expiresAt := time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second).Unix()
-	s.State.LiveUnlock = &LiveUnlockState{TokenHash: hashToken(token), ExpiresAt: expiresAt}
-	if err := s.save(); err != nil {
+	if err := s.withStateLock(func() error {
+		if err := s.load(); err != nil {
+			return err
+		}
+		s.State.LiveUnlock = &LiveUnlockState{TokenHash: hashToken(token), ExpiresAt: expiresAt}
+		return s.saveUnlocked()
+	}); err != nil {
 		return "", 0, err
 	}
 	return token, expiresAt, nil
 }
 
 func (s *SafetyEngine) clearLiveUnlock() error {
-	s.State.LiveUnlock = nil
-	return s.save()
+	return s.withStateLock(func() error {
+		if err := s.load(); err != nil {
+			return err
+		}
+		s.State.LiveUnlock = nil
+		return s.saveUnlocked()
+	})
 }
 
 func (s *SafetyEngine) liveUnlockStatus() map[string]any {
@@ -94,6 +161,11 @@ func (s *SafetyEngine) liveUnlockStatus() map[string]any {
 func (s *SafetyEngine) requireLiveAuthorization(token string) error {
 	if !s.liveModeEnabled() {
 		return newError(ErrorLiveModeOff, "Live mode is OFF. Enable with `rhx live on`.")
+	}
+	if err := s.withStateLock(func() error {
+		return s.load()
+	}); err != nil {
+		return err
 	}
 	if token == "" {
 		return newError(ErrorSafetyPolicy, "Missing live confirmation token. Run `rhx live on` and pass --live-confirm-token.")
@@ -138,6 +210,56 @@ func (s *SafetyEngine) enforce(symbol string, estimatedNotional float64) error {
 		}
 	}
 	return nil
+}
+
+func (s *SafetyEngine) reserveNotional(symbol string, estimatedNotional float64) (*SafetyReservation, error) {
+	reservation := &SafetyReservation{engine: s}
+	err := s.withStateLock(func() error {
+		if err := s.load(); err != nil {
+			return err
+		}
+		if err := s.enforce(symbol, estimatedNotional); err != nil {
+			return err
+		}
+		if estimatedNotional <= 0 {
+			return nil
+		}
+		day := time.Now().UTC().Format("2006-01-02")
+		s.State.DailyNotional[day] += estimatedNotional
+		reservation.value = estimatedNotional
+		return s.saveUnlocked()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return reservation, nil
+}
+
+func (r *SafetyReservation) release() error {
+	if r == nil || r.engine == nil || r.value <= 0 || r.released {
+		return nil
+	}
+	r.released = true
+	return r.engine.releaseNotional(r.value)
+}
+
+func (s *SafetyEngine) releaseNotional(value float64) error {
+	if value <= 0 {
+		return nil
+	}
+	return s.withStateLock(func() error {
+		if err := s.load(); err != nil {
+			return err
+		}
+		day := time.Now().UTC().Format("2006-01-02")
+		remaining := s.State.DailyNotional[day] - value
+		if remaining <= 0 {
+			delete(s.State.DailyNotional, day)
+		} else {
+			s.State.DailyNotional[day] = remaining
+		}
+		return s.saveUnlocked()
+	})
 }
 
 func (s *SafetyEngine) checkTradingWindow() error {
@@ -208,7 +330,12 @@ func (s *SafetyEngine) recordNotional(value float64) error {
 	if value <= 0 {
 		return nil
 	}
-	day := time.Now().UTC().Format("2006-01-02")
-	s.State.DailyNotional[day] += value
-	return s.save()
+	return s.withStateLock(func() error {
+		if err := s.load(); err != nil {
+			return err
+		}
+		day := time.Now().UTC().Format("2006-01-02")
+		s.State.DailyNotional[day] += value
+		return s.saveUnlocked()
+	})
 }
