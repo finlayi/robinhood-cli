@@ -12,6 +12,10 @@ import (
 	"golang.org/x/term"
 )
 
+const brokerageClientID = "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS"
+
+var authPollInterval = 5 * time.Second
+
 type AuthStatus struct {
 	Provider      string `json:"provider"`
 	Authenticated bool   `json:"authenticated"`
@@ -31,6 +35,13 @@ type AuthManager struct {
 	SessionPath string
 	Store       CredentialStore
 	Client      *HTTPClient
+}
+
+type brokerageAuthOptions struct {
+	PromptForCredentials bool
+	WaitForChallenge     bool
+	AllowPasswordLogin   bool
+	Force                bool
 }
 
 func newAuthManager(cfg RuntimeConfig) *AuthManager {
@@ -68,7 +79,11 @@ func (a *AuthManager) passiveStatus() BrokeragePassiveStatus {
 }
 
 func (a *AuthManager) brokerageStatus(ctx context.Context) AuthStatus {
-	_, err := a.ensureBrokerageAuthenticated(ctx, false, false)
+	waitForChallenge := canWaitForAuthChallenge()
+	_, err := a.ensureBrokerageAuthenticatedWithOptions(ctx, brokerageAuthOptions{
+		WaitForChallenge:   waitForChallenge,
+		AllowPasswordLogin: waitForChallenge,
+	})
 	if err == nil {
 		return AuthStatus{Provider: "brokerage", Authenticated: true, Detail: "Authenticated"}
 	}
@@ -82,20 +97,53 @@ func (a *AuthManager) brokerageStatus(ctx context.Context) AuthStatus {
 }
 
 func (a *AuthManager) ensureBrokerageAuthenticated(ctx context.Context, interactive bool, force bool) (Session, error) {
-	if force {
+	return a.ensureBrokerageAuthenticatedWithOptions(ctx, brokerageAuthOptions{
+		PromptForCredentials: interactive,
+		WaitForChallenge:     interactive,
+		AllowPasswordLogin:   true,
+		Force:                force,
+	})
+}
+
+func (a *AuthManager) ensureBrokerageAuthenticatedWithOptions(ctx context.Context, opts brokerageAuthOptions) (Session, error) {
+	if opts.Force {
 		deleteSession(a.SessionPath)
+		a.Client.clearSession()
 	}
-	if !force {
+	if !opts.Force {
 		if session, err := loadSession(a.SessionPath); err == nil && session.AccessToken != "" {
 			a.Client.setSession(session)
-			if err := a.verifyToken(ctx); err == nil {
+			err := a.verifyToken(ctx)
+			if err == nil {
 				return session, nil
 			}
+			if cliError(err).Code != ErrorAuthRequired {
+				return Session{}, err
+			}
+			if session.RefreshToken != "" {
+				a.Client.clearSession()
+				refreshed, refreshErr := a.refreshSession(ctx, session, opts.WaitForChallenge)
+				if refreshErr == nil {
+					if err := saveSession(a.SessionPath, refreshed); err != nil {
+						return Session{}, err
+					}
+					a.Client.setSession(refreshed)
+					return refreshed, nil
+				}
+				if cliError(refreshErr).Code != ErrorAuthRequired {
+					return Session{}, refreshErr
+				}
+			}
+			if !opts.AllowPasswordLogin {
+				return Session{}, newError(ErrorAuthRequired, "Stored Robinhood session expired and could not be refreshed. Run `rhx auth login`.")
+			}
+		} else if !opts.AllowPasswordLogin {
+			return Session{}, newError(ErrorAuthRequired, "No active Robinhood session. Run `rhx auth login`.")
 		}
 	}
 
 	username, password, _ := a.Store.brokerageCredentials(a.Profile)
-	if interactive {
+	if opts.PromptForCredentials {
 		var err error
 		username, password, err = promptForMissingCredentials(username, password)
 		if err != nil {
@@ -105,14 +153,15 @@ func (a *AuthManager) ensureBrokerageAuthenticated(ctx context.Context, interact
 	if username == "" || password == "" {
 		return Session{}, newError(ErrorAuthRequired, "Missing Robinhood username/password")
 	}
-	session, err := a.login(ctx, username, password, interactive)
+	a.Client.clearSession()
+	session, err := a.login(ctx, username, password, opts.WaitForChallenge)
 	if err != nil {
 		return Session{}, err
 	}
 	if err := saveSession(a.SessionPath, session); err != nil {
 		return Session{}, err
 	}
-	if err := a.Store.saveBrokerageCredentials(a.Profile, username, password); err != nil && interactive {
+	if err := a.Store.saveBrokerageCredentials(a.Profile, username, password); err != nil && opts.PromptForCredentials {
 		fmt.Fprintf(os.Stderr, "warning: could not save credentials to secure keyring: %v\n", err)
 	}
 	a.Client.setSession(session)
@@ -124,13 +173,45 @@ func (a *AuthManager) verifyToken(ctx context.Context) error {
 	return err
 }
 
-func (a *AuthManager) login(ctx context.Context, username string, password string, interactive bool) (Session, error) {
+func (a *AuthManager) refreshSession(ctx context.Context, session Session, waitForChallenge bool) (Session, error) {
+	form := url.Values{}
+	form.Set("client_id", brokerageClientID)
+	form.Set("expires_in", "86400")
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", session.RefreshToken)
+	form.Set("scope", "internal")
+	if session.DeviceToken != "" {
+		form.Set("device_token", session.DeviceToken)
+	}
+	data, status, err := a.Client.postFormRaw(ctx, robinhoodAPIBase+"/oauth2/token/", form)
+	if err != nil {
+		return Session{}, err
+	}
+	payload := asMap(data)
+	if workflowID := verificationWorkflowID(payload); workflowID != "" {
+		if !waitForChallenge {
+			return Session{}, newError(ErrorMFARequired, challengeDetail(payload))
+		}
+		fmt.Fprintln(os.Stderr, "Verification required. Complete the Robinhood challenge to refresh this session.")
+		if err := a.validateVerificationWorkflow(ctx, session.DeviceToken, workflowID); err != nil {
+			return Session{}, err
+		}
+		data, status, err = a.Client.postFormRaw(ctx, robinhoodAPIBase+"/oauth2/token/", form)
+		if err != nil {
+			return Session{}, err
+		}
+		payload = asMap(data)
+	}
+	return sessionFromTokenPayload(payload, status, session.DeviceToken, session.RefreshToken)
+}
+
+func (a *AuthManager) login(ctx context.Context, username string, password string, waitForChallenge bool) (Session, error) {
 	deviceToken := randomDeviceToken()
 	if old, err := loadSession(a.SessionPath); err == nil && old.DeviceToken != "" {
 		deviceToken = old.DeviceToken
 	}
 	form := url.Values{}
-	form.Set("client_id", "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS")
+	form.Set("client_id", brokerageClientID)
 	form.Set("expires_in", "86400")
 	form.Set("grant_type", "password")
 	form.Set("password", password)
@@ -149,7 +230,7 @@ func (a *AuthManager) login(ctx context.Context, username string, password strin
 	}
 	payload := asMap(data)
 	if workflowID := verificationWorkflowID(payload); workflowID != "" {
-		if !interactive {
+		if !waitForChallenge {
 			return Session{}, newError(ErrorMFARequired, challengeDetail(payload))
 		}
 		fmt.Fprintln(os.Stderr, "Verification required. Complete the Robinhood challenge to approve this device.")
@@ -162,6 +243,10 @@ func (a *AuthManager) login(ctx context.Context, username string, password strin
 		}
 		payload = asMap(data)
 	}
+	return sessionFromTokenPayload(payload, status, deviceToken, "")
+}
+
+func sessionFromTokenPayload(payload map[string]any, status int, deviceToken string, fallbackRefreshToken string) (Session, error) {
 	if hasMFAChallenge(payload) {
 		return Session{}, newError(ErrorMFARequired, challengeDetail(payload))
 	}
@@ -177,6 +262,9 @@ func (a *AuthManager) login(ctx context.Context, username string, password strin
 		tokenType = "Bearer"
 	}
 	refreshToken, _ := payload["refresh_token"].(string)
+	if refreshToken == "" {
+		refreshToken = fallbackRefreshToken
+	}
 	return Session{
 		TokenType:    tokenType,
 		AccessToken:  accessToken,
@@ -216,7 +304,7 @@ func (a *AuthManager) validateVerificationWorkflow(ctx context.Context, deviceTo
 
 func (a *AuthManager) waitForSheriffChallenge(ctx context.Context, inquiryURL string, deadline time.Time) error {
 	for time.Now().Before(deadline) {
-		if err := sleepContext(ctx, 5*time.Second); err != nil {
+		if err := sleepContext(ctx, authPollInterval); err != nil {
 			return err
 		}
 		data, _, err := a.Client.getRaw(ctx, inquiryURL, nil)
@@ -247,6 +335,9 @@ func (a *AuthManager) waitForSheriffChallenge(ctx context.Context, inquiryURL st
 			if challengeID == "" {
 				return newError(ErrorMFARequired, "Robinhood verification challenge missing id")
 			}
+			if !canPromptForVerificationCode() {
+				return newError(ErrorMFARequired, "Robinhood verification code required. Run `rhx auth login` in an interactive terminal.")
+			}
 			code, err := promptVerificationCode(challengeType)
 			if err != nil {
 				return err
@@ -271,7 +362,7 @@ func (a *AuthManager) waitForSheriffChallenge(ctx context.Context, inquiryURL st
 func (a *AuthManager) waitForPromptChallenge(ctx context.Context, challengeID string, deadline time.Time) error {
 	promptURL := robinhoodAPIBase + "/push/" + challengeID + "/get_prompts_status/"
 	for time.Now().Before(deadline) {
-		if err := sleepContext(ctx, 5*time.Second); err != nil {
+		if err := sleepContext(ctx, authPollInterval); err != nil {
 			return err
 		}
 		data, _, err := a.Client.getRaw(ctx, promptURL, nil)
@@ -300,11 +391,19 @@ func (a *AuthManager) waitForWorkflowApproval(ctx context.Context, inquiryURL st
 				return nil
 			}
 		}
-		if err := sleepContext(ctx, 5*time.Second); err != nil {
+		if err := sleepContext(ctx, authPollInterval); err != nil {
 			return err
 		}
 	}
 	return newError(ErrorMFARequired, "Robinhood verification workflow timed out")
+}
+
+func canWaitForAuthChallenge() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) || term.IsTerminal(int(os.Stderr.Fd()))
+}
+
+func canPromptForVerificationCode() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func hasMFAChallenge(payload map[string]any) bool {

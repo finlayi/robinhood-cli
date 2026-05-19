@@ -19,7 +19,11 @@ func newBrokerageProvider(auth *AuthManager) *BrokerageProvider {
 }
 
 func (p *BrokerageProvider) ensure(ctx context.Context) error {
-	_, err := p.auth.ensureBrokerageAuthenticated(ctx, false, false)
+	waitForChallenge := canWaitForAuthChallenge()
+	_, err := p.auth.ensureBrokerageAuthenticatedWithOptions(ctx, brokerageAuthOptions{
+		WaitForChallenge:   waitForChallenge,
+		AllowPasswordLogin: waitForChallenge,
+	})
 	return err
 }
 

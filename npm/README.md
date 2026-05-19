@@ -12,6 +12,11 @@ npx rhx auth login
 npx rhx auth verify
 ```
 
+Brokerage sessions are refreshed from the saved refresh token before `rhx`
+falls back to password login. Interactive commands wait for Robinhood approval
+challenges; non-interactive commands fail fast instead of repeatedly triggering
+MFA prompts.
+
 ## Common Examples
 
 ```bash

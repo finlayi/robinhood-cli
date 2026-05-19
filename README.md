@@ -66,6 +66,13 @@ rhx auth verify   # active API verification
 - `mfa_required`
 - `detail`
 
+When a stored brokerage access token expires, `rhx` tries the saved refresh token
+before falling back to password login. If Robinhood requires an approval
+challenge and the command is running in an interactive terminal, `rhx` waits for
+the app approval or verification code instead of immediately returning. In
+non-interactive runs, normal brokerage commands fail fast and ask you to run
+`rhx auth login` so automation does not repeatedly trigger MFA prompts.
+
 Session file:
 
 ```text

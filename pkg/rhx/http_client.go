@@ -43,6 +43,10 @@ func (c *HTTPClient) setSession(session Session) {
 	c.token = tokenType + " " + session.AccessToken
 }
 
+func (c *HTTPClient) clearSession() {
+	c.token = ""
+}
+
 func (c *HTTPClient) get(ctx context.Context, rawURL string, query map[string]string) (any, error) {
 	return c.request(ctx, http.MethodGet, rawURL, query, nil, false)
 }
