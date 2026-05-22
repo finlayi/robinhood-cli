@@ -102,15 +102,5 @@ func (c *Client) CryptoPositions(ctx context.Context) ([]map[string]any, error) 
 }
 
 func (c *Client) cryptoPassiveStatus() AuthStatus {
-	apiKey, privateKey, _ := c.auth.Store.cryptoCredentials(c.auth.Profile)
-	state := "CREDENTIALS_MISSING"
-	if apiKey != "" && privateKey != "" {
-		state = "READY"
-	}
-	return AuthStatus{
-		Provider:      "crypto",
-		Authenticated: apiKey != "" && privateKey != "",
-		State:         state,
-		Detail:        map[bool]string{true: "Credentials configured", false: "Missing RH_CRYPTO_API_KEY or RH_CRYPTO_PRIVATE_KEY_B64"}[apiKey != "" && privateKey != ""],
-	}
+	return cryptoPassiveStatus(c.auth)
 }
