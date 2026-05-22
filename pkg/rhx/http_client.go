@@ -15,6 +15,7 @@ import (
 const (
 	robinhoodAPIBase     = "https://api.robinhood.com"
 	robinhoodCryptoBase  = "https://nummus.robinhood.com"
+	robinhoodDoraBase    = "https://dora.robinhood.com"
 	robinhoodTradingBase = "https://trading.robinhood.com"
 )
 

@@ -1,6 +1,6 @@
 {
   "name": "rhx",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Go-native Robinhood CLI for npx",
   "license": "MIT",
   "type": "commonjs",
@@ -37,9 +37,9 @@
     "trading"
   ],
   "optionalDependencies": {
-    "rhx-darwin-arm64": "0.4.5",
-    "rhx-linux-x64": "0.4.5",
-    "rhx-win32-x64": "0.4.5"
+    "rhx-darwin-arm64": "0.4.6",
+    "rhx-linux-x64": "0.4.6",
+    "rhx-win32-x64": "0.4.6"
   },
   "scripts": {
     "build:native": "node scripts/build-native.cjs",

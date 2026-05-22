@@ -81,6 +81,8 @@ func (rt *appRuntime) dispatch(ctx context.Context, args []string) int {
 		return rt.dispatchPositions(ctx, args[1:])
 	case "quote":
 		return rt.dispatchQuote(ctx, args[1:])
+	case "news":
+		return rt.dispatchNews(ctx, args[1:])
 	case "orders":
 		return rt.dispatchOrders(ctx, args[1:])
 	case "options":
@@ -422,6 +424,29 @@ func (rt *appRuntime) dispatchQuote(ctx context.Context, args []string) int {
 		})
 	default:
 		return rt.usageError("quote", "Unknown quote subcommand: "+args[0])
+	}
+}
+
+func (rt *appRuntime) dispatchNews(ctx context.Context, args []string) int {
+	if len(args) == 0 {
+		return rt.usageError("news", "Missing news subcommand")
+	}
+	switch args[0] {
+	case "get":
+		flags, err := parseCommandFlags(args[1:], nil)
+		if err != nil {
+			return rt.commandError("news get", "brokerage", err)
+		}
+		if len(flags.Positionals) != 1 {
+			return rt.usageError("news get", "Expected: news get SYMBOL")
+		}
+		symbol := flags.Positionals[0]
+		return rt.run("news get", "brokerage", func() (any, map[string]any, error) {
+			rows, err := rt.brokerage.news(ctx, symbol)
+			return rows, map[string]any{"source": "robinhood_web_news"}, err
+		})
+	default:
+		return rt.usageError("news", "Unknown news subcommand: "+args[0])
 	}
 }
 
@@ -1120,6 +1145,7 @@ Commands:
   positions list
   quote get SYMBOL
   quote list --symbols AAPL,MSFT
+  news get SYMBOL
   orders list|open|get|cancel
   orders stock place --symbol AAPL --side buy --qty 1 [--wait terminal --timeout 60s] --live-confirm-token TOKEN
   orders stock sell-all --symbol AAPL --live-confirm-token TOKEN

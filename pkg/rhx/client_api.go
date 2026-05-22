@@ -73,6 +73,10 @@ func (c *Client) Quotes(ctx context.Context, symbols []string) ([]map[string]any
 	return c.brokerage.quotes(ctx, symbols)
 }
 
+func (c *Client) News(ctx context.Context, symbol string) ([]map[string]any, error) {
+	return c.brokerage.news(ctx, symbol)
+}
+
 func (c *Client) OptionExpirations(ctx context.Context, symbol string) (map[string]any, error) {
 	return c.brokerage.optionExpirations(ctx, symbol)
 }

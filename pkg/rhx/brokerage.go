@@ -569,6 +569,28 @@ func (p *BrokerageProvider) instrument(ctx context.Context, symbol string) (map[
 	return row, nil
 }
 
+func (p *BrokerageProvider) news(ctx context.Context, symbol string) ([]map[string]any, error) {
+	normalizedSymbol := strings.ToUpper(symbol)
+	instrument, err := p.instrument(ctx, normalizedSymbol)
+	if err != nil {
+		return nil, err
+	}
+	instrumentID, _ := instrument["id"].(string)
+	if instrumentID == "" {
+		return nil, wrapError(ErrorBrokerRejected, "No instrument id returned for %s", normalizedSymbol)
+	}
+	data, err := p.auth.Client.get(ctx, robinhoodDoraBase+"/feed/midlands/instrument/"+url.PathEscape(instrumentID)+"/", nil)
+	if err != nil {
+		return nil, err
+	}
+	rows := asRows(data)
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, normalizeNewsArticle(normalizedSymbol, instrumentID, row))
+	}
+	return out, nil
+}
+
 func (p *BrokerageProvider) optionChain(ctx context.Context, symbol string) (map[string]any, error) {
 	if err := p.ensure(ctx); err != nil {
 		return nil, err
@@ -767,6 +789,23 @@ func flattenQuote(row map[string]any, provider string) map[string]any {
 		"last_trade_price": firstAny(quote, "last_trade_price", "price"),
 		"updated_at":       quote["updated_at"],
 		"error":            row["error"],
+	}
+}
+
+func normalizeNewsArticle(symbol string, instrumentID string, raw map[string]any) map[string]any {
+	return map[string]any{
+		"uuid":                firstString(raw, "uuid", "id"),
+		"symbol":              symbol,
+		"instrument_id":       instrumentID,
+		"title":               firstString(raw, "title"),
+		"source":              firstString(raw, "source"),
+		"published_at":        firstAny(raw, "date", "published_at"),
+		"url":                 firstString(raw, "url", "relay_url"),
+		"source_uri":          firstString(raw, "source_uri"),
+		"preview_text":        firstString(raw, "preview_text", "summary"),
+		"image_url":           firstAny(raw, "image", "preview_image_url"),
+		"related_instruments": firstAny(raw, "related_instruments"),
+		"raw":                 raw,
 	}
 }
 

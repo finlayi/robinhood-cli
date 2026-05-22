@@ -5,6 +5,7 @@ Go-native Robinhood CLI for agent workflows.
 ## What It Does
 
 - Calls Robinhood brokerage endpoints directly for account, positions, quotes, and stock orders.
+- Calls Robinhood's web news feed endpoint for stock news.
 - Calls Robinhood's official crypto trading API directly when crypto API credentials are configured.
 - Keeps `npx rhx` as the primary entrypoint through prebuilt Go binaries.
 - Stores brokerage credentials in the OS keyring when available, with `RH_USERNAME`/`RH_PASSWORD` env vars as a non-persistent fallback.
@@ -106,6 +107,7 @@ Order placement is blocked while live mode is off. When live mode is enabled, `r
 ```bash
 rhx --json quote get AAPL
 rhx --json quote list --symbols AAPL,MSFT,BTC-USD
+rhx --json --limit 5 news get AAPL
 rhx --json --fields symbol,quantity positions list
 rhx --json --limit 10 orders list
 rhx --json --limit 20 orders open --asset-type stock
