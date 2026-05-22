@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type globalOptions struct {
@@ -230,7 +231,7 @@ func (rt *appRuntime) dispatchAuth(ctx context.Context, args []string) int {
 				return nil, nil, err
 			}
 			return map[string]any{
-				"brokerage":    AuthStatus{Provider: "brokerage", Authenticated: true, Detail: "Authenticated"},
+				"brokerage":    AuthStatus{Provider: "brokerage", Authenticated: true, State: "READY", Detail: "Authenticated"},
 				"session_file": rt.auth.SessionPath,
 				"created_at":   status.CreatedAt.Format(timeRFC3339()),
 			}, nil, nil
@@ -259,7 +260,7 @@ func (rt *appRuntime) dispatchAuth(ctx context.Context, args []string) int {
 			if err != nil {
 				return nil, nil, err
 			}
-			return map[string]any{"brokerage": AuthStatus{Provider: "brokerage", Authenticated: true, Detail: "Authenticated"}}, nil, nil
+			return map[string]any{"brokerage": AuthStatus{Provider: "brokerage", Authenticated: true, State: "READY", Detail: "Authenticated"}}, nil, nil
 		})
 	case "logout":
 		flags, err := parseCommandFlags(args[1:], boolSet("forget-creds"))
@@ -430,18 +431,38 @@ func (rt *appRuntime) dispatchOrders(ctx context.Context, args []string) int {
 	}
 	switch args[0] {
 	case "list":
-		flags, err := parseCommandFlags(args[1:], boolSet("open"))
+		flags, err := parseCommandFlags(args[1:], boolSet("open", "openish"))
 		if err != nil {
 			return rt.commandError("orders list", "", err)
 		}
 		assetType := strings.ToLower(flags.Value("asset-type"))
 		provider := rt.orderProvider(assetType)
+		openOnly := flags.Bool("open") || flags.Bool("openish")
 		return rt.run("orders list", provider, func() (any, map[string]any, error) {
 			if provider == "crypto" {
-				rows, err := rt.crypto.listOrders(ctx, flags.Bool("open"))
+				rows, err := rt.crypto.listOrders(ctx, openOnly)
+				return limitRows(rows, rt.opts.Output.Limit), nil, err
+			}
+			if openOnly && (rt.opts.Output.Limit > 0 || flags.Bool("openish")) {
+				rows, err := rt.brokerage.listOpenOrders(ctx, assetType, rt.effectiveOrderLimit())
 				return rows, nil, err
 			}
-			rows, err := rt.brokerage.listOrders(ctx, assetType, flags.Bool("open"))
+			rows, err := rt.brokerage.listOrders(ctx, assetType, openOnly)
+			return rows, nil, err
+		})
+	case "open":
+		flags, err := parseCommandFlags(args[1:], nil)
+		if err != nil {
+			return rt.commandError("orders open", "", err)
+		}
+		assetType := strings.ToLower(flags.Value("asset-type"))
+		provider := rt.orderProvider(assetType)
+		return rt.run("orders open", provider, func() (any, map[string]any, error) {
+			if provider == "crypto" {
+				rows, err := rt.crypto.listOrders(ctx, true)
+				return limitRows(rows, rt.effectiveOrderLimit()), nil, err
+			}
+			rows, err := rt.brokerage.listOpenOrders(ctx, assetType, rt.effectiveOrderLimit())
 			return rows, nil, err
 		})
 	case "get":
@@ -501,21 +522,33 @@ func (rt *appRuntime) placeStock(ctx context.Context, args []string) int {
 		return rt.commandError("orders stock place", "brokerage", err)
 	}
 	quantityRaw := strings.TrimSpace(flags.Value("qty"))
+	orderType := valueOrDefault(strings.ToLower(flags.Value("type")), "market")
 	intent := StockOrderIntent{
 		Symbol:        strings.ToUpper(flags.Value("symbol")),
 		Side:          strings.ToLower(flags.Value("side")),
-		Type:          valueOrDefault(strings.ToLower(flags.Value("type")), "market"),
+		Type:          orderType,
 		Quantity:      parseFloatPtr(quantityRaw),
 		QuantityRaw:   quantityRaw,
 		NotionalUSD:   parseFloatPtr(flags.Value("notional-usd")),
 		LimitPrice:    parseFloatPtr(flags.Value("limit-price")),
 		StopPrice:     parseFloatPtr(flags.Value("stop-price")),
-		TimeInForce:   valueOrDefault(strings.ToLower(flags.Value("time-in-force")), "gtc"),
 		ExtendedHours: flags.Bool("extended-hours"),
+	}
+	intent.TimeInForce, err = stockTimeInForceForPlace(flags, intent)
+	if err != nil {
+		return rt.commandError("orders stock place", "brokerage", err)
+	}
+	waitMode := strings.ToLower(flags.Value("wait"))
+	waitTimeout, err := parseOrderWaitTimeout(flags.Value("timeout"))
+	if err != nil {
+		return rt.commandError("orders stock place", "brokerage", err)
 	}
 	return rt.run("orders stock place", "brokerage", func() (any, map[string]any, error) {
 		if err := validateStockIntent(intent); err != nil {
 			return nil, nil, err
+		}
+		if waitMode != "" && waitMode != "terminal" {
+			return nil, nil, newError(ErrorValidation, "--wait must be terminal")
 		}
 		if err := rt.safety.requireLiveAuthorization(flags.Value("live-confirm-token")); err != nil {
 			return nil, nil, err
@@ -532,6 +565,12 @@ func (rt *appRuntime) placeStock(ctx context.Context, args []string) int {
 		if err != nil {
 			_ = reservation.release()
 			return nil, nil, err
+		}
+		if waitMode == "terminal" {
+			result, err = rt.brokerage.waitForStockOrderTerminal(ctx, firstString(result, "id", "order_id"), waitTimeout)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 		return result, nil, nil
 	})
@@ -670,6 +709,13 @@ func limitRows(rows []map[string]any, n int) []map[string]any {
 	return rows
 }
 
+func (rt *appRuntime) effectiveOrderLimit() int {
+	if rt.opts.Output.Limit > 0 {
+		return rt.opts.Output.Limit
+	}
+	return 20
+}
+
 func (rt *appRuntime) doctor(ctx context.Context) map[string]any {
 	return map[string]any{
 		"config_path":  rt.cfg.Paths.ConfigPath,
@@ -685,9 +731,14 @@ func (rt *appRuntime) doctor(ctx context.Context) map[string]any {
 
 func (rt *appRuntime) cryptoPassiveStatus() AuthStatus {
 	apiKey, privateKey, _ := rt.auth.Store.cryptoCredentials(rt.auth.Profile)
+	state := "CREDENTIALS_MISSING"
+	if apiKey != "" && privateKey != "" {
+		state = "READY"
+	}
 	return AuthStatus{
 		Provider:      "crypto",
 		Authenticated: apiKey != "" && privateKey != "",
+		State:         state,
 		Detail:        map[bool]string{true: "Credentials configured", false: "Missing RH_CRYPTO_API_KEY or RH_CRYPTO_PRIVATE_KEY_B64"}[apiKey != "" && privateKey != ""],
 	}
 }
@@ -757,6 +808,32 @@ func validateStockIntent(intent StockOrderIntent) error {
 		return newError(ErrorValidation, "--limit-price and --stop-price are required for stop_limit orders")
 	}
 	return nil
+}
+
+func stockTimeInForceForPlace(flags parsedFlags, intent StockOrderIntent) (string, error) {
+	timeInForce, explicit := flags.Values["time-in-force"]
+	timeInForce = strings.ToLower(strings.TrimSpace(timeInForce))
+	if timeInForce == "" {
+		if isFractionalStockQuantity(intent) && intent.Type == "market" {
+			return "gfd", nil
+		}
+		return "gtc", nil
+	}
+	if explicit && isFractionalStockQuantity(intent) && intent.Type == "market" && timeInForce != "gfd" {
+		return "", newError(ErrorValidation, "Fractional stock quantity orders require --time-in-force gfd.")
+	}
+	return timeInForce, nil
+}
+
+func parseOrderWaitTimeout(raw string) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 60 * time.Second, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		return 0, newError(ErrorValidation, "--timeout must be a positive duration like 60s")
+	}
+	return timeout, nil
 }
 
 func isFractionalStockQuantity(intent StockOrderIntent) bool {
@@ -1043,8 +1120,8 @@ Commands:
   positions list
   quote get SYMBOL
   quote list --symbols AAPL,MSFT
-  orders list|get|cancel
-  orders stock place --symbol AAPL --side buy --qty 1 --live-confirm-token TOKEN
+  orders list|open|get|cancel
+  orders stock place --symbol AAPL --side buy --qty 1 [--wait terminal --timeout 60s] --live-confirm-token TOKEN
   orders stock sell-all --symbol AAPL --live-confirm-token TOKEN
   orders crypto place --symbol BTC-USD --side buy --qty 0.001 --live-confirm-token TOKEN
   options expirations AAPL

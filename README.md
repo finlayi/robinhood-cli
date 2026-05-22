@@ -64,6 +64,7 @@ rhx auth verify   # active API verification
 
 - `authenticated`
 - `mfa_required`
+- `state` (`READY`, `MFA_REQUIRED_DO_NOT_RETRY`, `SESSION_EXPIRED`, `CREDENTIALS_MISSING`, or an error-code state)
 - `detail`
 
 When a stored brokerage access token expires, `rhx` tries the saved refresh token
@@ -107,6 +108,7 @@ rhx --json quote get AAPL
 rhx --json quote list --symbols AAPL,MSFT,BTC-USD
 rhx --json --fields symbol,quantity positions list
 rhx --json --limit 10 orders list
+rhx --json --limit 20 orders open --asset-type stock
 rhx --json account summary
 rhx --json portfolio analyze --top 10
 rhx --json options expirations AAPL
@@ -119,14 +121,17 @@ Stock order:
 ```bash
 TOKEN=$(rhx --json live on --yes | jq -r '.data.live_confirm_token')
 rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
+rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --wait terminal --timeout 60s --live-confirm-token "$TOKEN"
 ```
 
-Fractional stock market orders can use share quantity or notional dollars:
+Fractional stock market orders can use share quantity or notional dollars. Fractional `--qty` market orders default to `gfd`; if `--time-in-force` is passed explicitly it must be `gfd`.
 
 ```bash
 rhx --json orders stock place --symbol AAPL --side sell --type market --qty 0.123456 --live-confirm-token "$TOKEN"
 rhx --json orders stock place --symbol AAPL --side buy --type market --notional-usd 50 --live-confirm-token "$TOKEN"
 ```
+
+Stock order JSON is normalized across submit, list, get, and wait/reconcile paths with top-level `id`, `symbol`, `side`, `state`, `executed_quantity`, `average_price`, `executed_notional`, `fees`, and `settlement_date` fields plus the raw broker payload in `raw`.
 
 Sell the current sellable stock position for a symbol:
 
@@ -160,7 +165,7 @@ Every JSON command returns:
   "error": null,
   "meta": {
     "timestamp": "2026-05-12T00:00:00Z",
-    "output_schema": "v3",
+    "output_schema": "v4",
     "view": "summary"
   }
 }

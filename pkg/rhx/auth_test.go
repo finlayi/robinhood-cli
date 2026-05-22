@@ -10,6 +10,26 @@ import (
 	"time"
 )
 
+func TestAuthStateFromError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *CLIError
+		want string
+	}{
+		{name: "ready", err: nil, want: "READY"},
+		{name: "mfa", err: newError(ErrorMFARequired, "challenge required"), want: "MFA_REQUIRED_DO_NOT_RETRY"},
+		{name: "session", err: newError(ErrorAuthRequired, "Stored Robinhood session expired"), want: "SESSION_EXPIRED"},
+		{name: "credentials", err: newError(ErrorAuthRequired, "Missing Robinhood username/password"), want: "CREDENTIALS_MISSING"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authStateFromError(tc.err); got != tc.want {
+				t.Fatalf("state = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEnsureUsesRefreshTokenBeforePasswordLogin(t *testing.T) {
 	refreshRequests := 0
 	passwordRequests := 0

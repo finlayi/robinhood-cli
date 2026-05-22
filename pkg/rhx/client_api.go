@@ -50,7 +50,7 @@ func (c *Client) Login(ctx context.Context, interactive bool, force bool) (AuthS
 	if err != nil {
 		return AuthStatus{}, err
 	}
-	return AuthStatus{Provider: "brokerage", Authenticated: true, Detail: "Authenticated"}, nil
+	return AuthStatus{Provider: "brokerage", Authenticated: true, State: "READY", Detail: "Authenticated"}, nil
 }
 
 func (c *Client) Logout(forgetCredentials bool) {
@@ -99,9 +99,14 @@ func (c *Client) CryptoPositions(ctx context.Context) ([]map[string]any, error) 
 
 func (c *Client) cryptoPassiveStatus() AuthStatus {
 	apiKey, privateKey, _ := c.auth.Store.cryptoCredentials(c.auth.Profile)
+	state := "CREDENTIALS_MISSING"
+	if apiKey != "" && privateKey != "" {
+		state = "READY"
+	}
 	return AuthStatus{
 		Provider:      "crypto",
 		Authenticated: apiKey != "" && privateKey != "",
+		State:         state,
 		Detail:        map[bool]string{true: "Credentials configured", false: "Missing RH_CRYPTO_API_KEY or RH_CRYPTO_PRIVATE_KEY_B64"}[apiKey != "" && privateKey != ""],
 	}
 }

@@ -139,15 +139,12 @@ func (p *OfficialCryptoProvider) placeOrder(ctx context.Context, intent CryptoOr
 		return nil, 0, err
 	}
 	raw := asMap(data)
-	return map[string]any{
-		"provider":   "crypto",
-		"order_id":   firstString(raw, "id", "order_id"),
-		"state":      firstString(raw, "state", "status"),
-		"symbol":     normalizeCryptoSymbol(intent.Symbol),
-		"side":       intent.Side,
-		"asset_type": "crypto",
-		"raw":        raw,
-	}, estimated, nil
+	return normalizeOrder("crypto", raw, map[string]any{
+		"provider": "crypto",
+		"symbol":   normalizeCryptoSymbol(intent.Symbol),
+		"side":     intent.Side,
+		"state":    firstString(raw, "state", "status"),
+	}), estimated, nil
 }
 
 func (p *OfficialCryptoProvider) listOrders(ctx context.Context, openOnly bool) ([]map[string]any, error) {
@@ -159,7 +156,11 @@ func (p *OfficialCryptoProvider) listOrders(ctx context.Context, openOnly bool) 
 	if err != nil {
 		return nil, err
 	}
-	return resultsRows(data), nil
+	rows := []map[string]any{}
+	for _, row := range resultsRows(data) {
+		rows = append(rows, normalizeOrder("crypto", row, map[string]any{"provider": "crypto"}))
+	}
+	return rows, nil
 }
 
 func (p *OfficialCryptoProvider) getOrder(ctx context.Context, orderID string) (map[string]any, error) {
@@ -167,7 +168,7 @@ func (p *OfficialCryptoProvider) getOrder(ctx context.Context, orderID string) (
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"asset_type": "crypto", "order": asMap(data)}, nil
+	return normalizeOrder("crypto", asMap(data), map[string]any{"provider": "crypto"}), nil
 }
 
 func (p *OfficialCryptoProvider) cancelOrder(ctx context.Context, orderID string) (map[string]any, error) {

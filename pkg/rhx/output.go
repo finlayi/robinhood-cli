@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const outputSchemaVersion = "v3"
+const outputSchemaVersion = "v4"
 
 type BrokerError struct {
 	Code      ErrorCode      `json:"code"`

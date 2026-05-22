@@ -14,6 +14,8 @@ type BrokerageProvider struct {
 	auth *AuthManager
 }
 
+var orderPollInterval = 2 * time.Second
+
 func newBrokerageProvider(auth *AuthManager) *BrokerageProvider {
 	return &BrokerageProvider{auth: auth}
 }
@@ -254,11 +256,10 @@ func (p *BrokerageProvider) listOrders(ctx context.Context, assetType string, op
 			return nil, err
 		}
 		for _, row := range stockRows {
-			if openOnly && row["cancel_url"] == nil {
+			if openOnly && !isOpenishOrder(row) {
 				continue
 			}
-			row["asset_type"] = "stock"
-			rows = append(rows, row)
+			rows = append(rows, normalizeOrder("stock", row, map[string]any{"provider": "brokerage"}))
 		}
 	}
 	if assetType == "" || assetType == "option" {
@@ -269,11 +270,10 @@ func (p *BrokerageProvider) listOrders(ctx context.Context, assetType string, op
 			}
 		} else {
 			for _, row := range optionRows {
-				if openOnly && row["cancel_url"] == nil {
+				if openOnly && !isOpenishOrder(row) {
 					continue
 				}
-				row["asset_type"] = "option"
-				rows = append(rows, row)
+				rows = append(rows, normalizeOrder("option", row, map[string]any{"provider": "brokerage"}))
 			}
 		}
 	}
@@ -285,12 +285,83 @@ func (p *BrokerageProvider) listOrders(ctx context.Context, assetType string, op
 			}
 		} else {
 			for _, row := range cryptoRows {
-				if openOnly && row["cancel_url"] == nil {
+				if openOnly && !isOpenishOrder(row) {
 					continue
 				}
-				row["asset_type"] = "crypto"
-				rows = append(rows, row)
+				rows = append(rows, normalizeOrder("crypto", row, map[string]any{"provider": "brokerage"}))
 			}
+		}
+	}
+	return rows, nil
+}
+
+func (p *BrokerageProvider) listOpenOrders(ctx context.Context, assetType string, limit int) ([]map[string]any, error) {
+	if err := p.ensure(ctx); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows := []map[string]any{}
+	if assetType == "" || assetType == "stock" {
+		stockRows, err := p.openOrderPage(ctx, robinhoodAPIBase+"/orders/", "stock", limit-len(rows))
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, stockRows...)
+	}
+	if len(rows) >= limit {
+		return rows[:limit], nil
+	}
+	if assetType == "" || assetType == "option" {
+		optionRows, err := p.openOrderPage(ctx, robinhoodAPIBase+"/options/orders/", "option", limit-len(rows))
+		if err != nil {
+			if assetType == "option" {
+				return nil, err
+			}
+		} else {
+			rows = append(rows, optionRows...)
+		}
+	}
+	if len(rows) >= limit {
+		return rows[:limit], nil
+	}
+	if assetType == "" || assetType == "crypto" {
+		cryptoRows, err := p.openOrderPage(ctx, robinhoodCryptoBase+"/orders/", "crypto", limit-len(rows))
+		if err != nil {
+			if assetType == "crypto" {
+				return nil, err
+			}
+		} else {
+			rows = append(rows, cryptoRows...)
+		}
+	}
+	if len(rows) > limit {
+		return rows[:limit], nil
+	}
+	return rows, nil
+}
+
+func (p *BrokerageProvider) openOrderPage(ctx context.Context, endpoint string, assetType string, limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		return []map[string]any{}, nil
+	}
+	pageSize := limit
+	if pageSize < 20 {
+		pageSize = 20
+	}
+	data, err := p.auth.Client.get(ctx, endpoint, map[string]string{"page_size": strconv.Itoa(pageSize)})
+	if err != nil {
+		return nil, err
+	}
+	rows := []map[string]any{}
+	for _, row := range resultsRows(data) {
+		if !isOpenishOrder(row) {
+			continue
+		}
+		rows = append(rows, normalizeOrder(assetType, row, map[string]any{"provider": "brokerage"}))
+		if len(rows) >= limit {
+			break
 		}
 	}
 	return rows, nil
@@ -303,14 +374,19 @@ func (p *BrokerageProvider) getOrder(ctx context.Context, orderID string, assetT
 	switch assetType {
 	case "option":
 		data, err := p.auth.Client.get(ctx, robinhoodAPIBase+"/options/orders/"+orderID+"/", nil)
-		return map[string]any{"asset_type": "option", "order": asMap(data)}, err
+		return normalizeOrder("option", asMap(data), map[string]any{"provider": "brokerage"}), err
 	case "crypto":
 		data, err := p.auth.Client.get(ctx, robinhoodCryptoBase+"/orders/"+orderID+"/", nil)
-		return map[string]any{"asset_type": "crypto", "order": asMap(data)}, err
+		return normalizeOrder("crypto", asMap(data), map[string]any{"provider": "brokerage"}), err
 	default:
-		data, err := p.auth.Client.get(ctx, robinhoodAPIBase+"/orders/"+orderID+"/", nil)
-		return map[string]any{"asset_type": "stock", "order": asMap(data)}, err
+		raw, err := p.stockOrder(ctx, orderID)
+		return normalizeOrder("stock", raw, map[string]any{"provider": "brokerage"}), err
 	}
+}
+
+func (p *BrokerageProvider) stockOrder(ctx context.Context, orderID string) (map[string]any, error) {
+	data, err := p.auth.Client.get(ctx, robinhoodAPIBase+"/orders/"+orderID+"/", nil)
+	return asMap(data), err
 }
 
 func (p *BrokerageProvider) cancelOrder(ctx context.Context, orderID string, assetType string) (map[string]any, error) {
@@ -437,15 +513,48 @@ func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrd
 		return nil, 0, err
 	}
 	result := asMap(data)
-	return map[string]any{
-		"provider":   "brokerage",
-		"order_id":   firstString(result, "id", "order_id"),
-		"state":      firstString(result, "state", "status"),
-		"symbol":     intent.Symbol,
-		"side":       intent.Side,
-		"asset_type": "stock",
-		"raw":        result,
-	}, estimated, nil
+	return normalizeOrder("stock", result, map[string]any{
+		"provider": "brokerage",
+		"symbol":   intent.Symbol,
+		"side":     intent.Side,
+		"state":    firstString(result, "state", "status"),
+	}), estimated, nil
+}
+
+func (p *BrokerageProvider) waitForStockOrderTerminal(ctx context.Context, orderID string, timeout time.Duration) (map[string]any, error) {
+	if orderID == "" {
+		return nil, newError(ErrorBrokerRejected, "Broker did not return an order id to reconcile")
+	}
+	if err := p.ensure(ctx); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().UTC().Add(timeout)
+	for {
+		raw, err := p.stockOrder(ctx, orderID)
+		if err != nil {
+			return nil, err
+		}
+		order := normalizeOrder("stock", raw, map[string]any{"provider": "brokerage"})
+		state := firstString(order, "state")
+		if isTerminalOrderState(state) {
+			return order, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, wrapError(ErrorBrokerRejected, "Order %s did not reach a terminal state within %s; last state was %s", orderID, timeout, valueOrUnknown(state))
+		}
+		sleep := orderPollInterval
+		if sleep > remaining {
+			sleep = remaining
+		}
+		timer := time.NewTimer(sleep)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (p *BrokerageProvider) instrument(ctx context.Context, symbol string) (map[string]any, error) {
@@ -677,6 +786,83 @@ func firstString(row map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeOrder(assetType string, raw map[string]any, defaults map[string]any) map[string]any {
+	id := firstString(raw, "id", "order_id")
+	if id == "" {
+		id = firstString(defaults, "id", "order_id")
+	}
+	symbol := firstString(raw, "symbol")
+	if symbol == "" {
+		symbol = firstString(defaults, "symbol")
+	}
+	side := firstString(raw, "side")
+	if side == "" {
+		side = firstString(defaults, "side")
+	}
+	state := firstString(raw, "state", "status")
+	if state == "" {
+		state = firstString(defaults, "state", "status")
+	}
+	executedQuantity := firstAny(raw, "executed_quantity", "cumulative_quantity", "filled_quantity", "quantity_executed")
+	averagePrice := firstAny(raw, "average_price", "average_fill_price", "avg_price")
+	return map[string]any{
+		"id":                id,
+		"order_id":          id,
+		"symbol":            symbol,
+		"side":              side,
+		"state":             state,
+		"executed_quantity": executedQuantity,
+		"average_price":     averagePrice,
+		"executed_notional": orderExecutedNotional(raw, executedQuantity, averagePrice),
+		"fees":              firstAny(raw, "fees", "fee", "total_fees", "regulatory_fees"),
+		"settlement_date":   firstAny(raw, "settlement_date", "settlement_date_for_stock_order", "settlement_date_for_execution"),
+		"asset_type":        assetType,
+		"provider":          firstString(defaults, "provider"),
+		"raw":               raw,
+	}
+}
+
+func orderExecutedNotional(raw map[string]any, executedQuantity any, averagePrice any) any {
+	if value := firstAny(raw, "executed_notional", "cumulative_notional", "filled_notional"); value != nil {
+		return value
+	}
+	qty := floatFromAny(executedQuantity)
+	price := floatFromAny(averagePrice)
+	if qty <= 0 || price <= 0 {
+		return nil
+	}
+	return formatFloat(qty * price)
+}
+
+func isOpenishOrder(row map[string]any) bool {
+	if value := firstAny(row, "cancel_url"); value != nil {
+		if raw, ok := value.(string); !ok || raw != "" {
+			return true
+		}
+	}
+	state := firstString(row, "state", "status")
+	if state == "" {
+		return false
+	}
+	return !isTerminalOrderState(state)
+}
+
+func isTerminalOrderState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "filled", "cancelled", "canceled", "rejected", "failed", "expired", "voided":
+		return true
+	default:
+		return false
+	}
+}
+
+func valueOrUnknown(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func stockOrderPrice(intent StockOrderIntent, quote map[string]any) float64 {

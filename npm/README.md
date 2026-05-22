@@ -26,6 +26,8 @@ npx rhx --json options expirations AAPL
 
 TOKEN=$(npx rhx --json live on --yes | jq -r '.data.live_confirm_token')
 npx rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --live-confirm-token "$TOKEN"
+npx rhx --json orders stock place --symbol AAPL --side buy --type market --qty 1 --wait terminal --timeout 60s --live-confirm-token "$TOKEN"
+npx rhx --json --limit 20 orders open --asset-type stock
 npx rhx --json orders stock sell-all --symbol AAPL --live-confirm-token "$TOKEN"
 ```
 

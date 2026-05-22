@@ -20,6 +20,7 @@ type AuthStatus struct {
 	Provider      string `json:"provider"`
 	Authenticated bool   `json:"authenticated"`
 	MFARequired   bool   `json:"mfa_required"`
+	State         string `json:"state"`
 	Detail        string `json:"detail,omitempty"`
 }
 
@@ -85,13 +86,14 @@ func (a *AuthManager) brokerageStatus(ctx context.Context) AuthStatus {
 		AllowPasswordLogin: waitForChallenge,
 	})
 	if err == nil {
-		return AuthStatus{Provider: "brokerage", Authenticated: true, Detail: "Authenticated"}
+		return AuthStatus{Provider: "brokerage", Authenticated: true, State: "READY", Detail: "Authenticated"}
 	}
 	ce := cliError(err)
 	return AuthStatus{
 		Provider:      "brokerage",
 		Authenticated: false,
 		MFARequired:   ce.Code == ErrorMFARequired,
+		State:         authStateFromError(ce),
 		Detail:        ce.Message,
 	}
 }
@@ -511,11 +513,32 @@ func (a *AuthManager) logout(forgetCreds bool) {
 func (a *AuthManager) cryptoStatus(ctx context.Context) AuthStatus {
 	apiKey, privateKey, _ := a.Store.cryptoCredentials(a.Profile)
 	if apiKey == "" || privateKey == "" {
-		return AuthStatus{Provider: "crypto", Authenticated: false, Detail: "Missing RH_CRYPTO_API_KEY or RH_CRYPTO_PRIVATE_KEY_B64"}
+		return AuthStatus{Provider: "crypto", Authenticated: false, State: "CREDENTIALS_MISSING", Detail: "Missing RH_CRYPTO_API_KEY or RH_CRYPTO_PRIVATE_KEY_B64"}
 	}
 	provider := newOfficialCryptoProvider(a)
 	if err := provider.verify(ctx); err != nil {
-		return AuthStatus{Provider: "crypto", Authenticated: false, Detail: cliError(err).Message}
+		ce := cliError(err)
+		return AuthStatus{Provider: "crypto", Authenticated: false, State: authStateFromError(ce), Detail: ce.Message}
 	}
-	return AuthStatus{Provider: "crypto", Authenticated: true, Detail: "Authenticated"}
+	return AuthStatus{Provider: "crypto", Authenticated: true, State: "READY", Detail: "Authenticated"}
+}
+
+func authStateFromError(err *CLIError) string {
+	if err == nil {
+		return "READY"
+	}
+	switch err.Code {
+	case ErrorMFARequired:
+		return "MFA_REQUIRED_DO_NOT_RETRY"
+	case ErrorAuthRequired:
+		msg := strings.ToLower(err.Message)
+		if strings.Contains(msg, "missing") && (strings.Contains(msg, "username") || strings.Contains(msg, "credential") || strings.Contains(msg, "api key") || strings.Contains(msg, "api_key")) {
+			return "CREDENTIALS_MISSING"
+		}
+		return "SESSION_EXPIRED"
+	case ErrorRateLimited:
+		return "RATE_LIMITED"
+	default:
+		return string(err.Code)
+	}
 }

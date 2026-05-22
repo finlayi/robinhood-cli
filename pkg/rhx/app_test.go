@@ -104,6 +104,37 @@ func TestValidateStockIntentRejectsFractionalLimitQuantity(t *testing.T) {
 	}
 }
 
+func TestStockTimeInForceForPlaceDefaultsFractionalQuantityToGFD(t *testing.T) {
+	qty := 0.123456
+	got, err := stockTimeInForceForPlace(parsedFlags{Values: map[string]string{}}, StockOrderIntent{
+		Symbol:      "AAPL",
+		Side:        "sell",
+		Type:        "market",
+		Quantity:    &qty,
+		QuantityRaw: "0.123456",
+	})
+	if err != nil {
+		t.Fatalf("stockTimeInForceForPlace returned error: %v", err)
+	}
+	if got != "gfd" {
+		t.Fatalf("time in force = %q, want gfd", got)
+	}
+}
+
+func TestStockTimeInForceForPlaceRejectsNonGFDForFractionalQuantity(t *testing.T) {
+	qty := 0.123456
+	_, err := stockTimeInForceForPlace(parsedFlags{Values: map[string]string{"time-in-force": "gtc"}}, StockOrderIntent{
+		Symbol:      "AAPL",
+		Side:        "sell",
+		Type:        "market",
+		Quantity:    &qty,
+		QuantityRaw: "0.123456",
+	})
+	if err == nil {
+		t.Fatalf("stockTimeInForceForPlace allowed fractional quantity with gtc")
+	}
+}
+
 func TestSellableStockQuantityPreservesExactQuantity(t *testing.T) {
 	got, gotFloat, err := sellableStockQuantity(map[string]any{
 		"quantity": "0.123456",

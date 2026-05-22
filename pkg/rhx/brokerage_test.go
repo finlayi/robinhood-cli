@@ -26,9 +26,98 @@ func TestListOrdersReturnsExplicitAssetErrors(t *testing.T) {
 	}
 }
 
+func TestListOpenOrdersUsesSingleBoundedStockPage(t *testing.T) {
+	orderRequests := 0
+	pageSize := ""
+	provider, cleanup := testBrokerageProviderWithHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/positions/":
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "/orders/":
+			orderRequests++
+			pageSize = r.URL.Query().Get("page_size")
+			_, _ = w.Write([]byte(`{
+				"next":"https://api.robinhood.com/orders/?cursor=next",
+				"results":[
+					{"id":"filled-id","symbol":"AAPL","side":"buy","state":"filled"},
+					{"id":"open-id","symbol":"MSFT","side":"sell","state":"queued","cancel_url":"https://api.robinhood.com/orders/open-id/cancel/"}
+				]
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer cleanup()
+
+	rows, err := provider.listOpenOrders(context.Background(), "stock", 1)
+	if err != nil {
+		t.Fatalf("listOpenOrders returned error: %v", err)
+	}
+	if orderRequests != 1 {
+		t.Fatalf("order requests = %d, want 1", orderRequests)
+	}
+	if pageSize != "20" {
+		t.Fatalf("page_size = %q, want 20", pageSize)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0]["id"] != "open-id" || rows[0]["symbol"] != "MSFT" || rows[0]["state"] != "queued" {
+		t.Fatalf("unexpected normalized row: %#v", rows[0])
+	}
+}
+
+func TestWaitForStockOrderTerminalReturnsNormalizedFill(t *testing.T) {
+	oldInterval := orderPollInterval
+	orderPollInterval = time.Millisecond
+	defer func() { orderPollInterval = oldInterval }()
+
+	orderRequests := 0
+	provider, cleanup := testBrokerageProviderWithHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/positions/":
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "/orders/order-id/":
+			orderRequests++
+			if orderRequests == 1 {
+				_, _ = w.Write([]byte(`{"id":"order-id","symbol":"AAPL","side":"buy","state":"queued"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{
+				"id":"order-id",
+				"symbol":"AAPL",
+				"side":"buy",
+				"state":"filled",
+				"executed_quantity":"2",
+				"average_price":"6.17",
+				"fees":"0.00",
+				"settlement_date":"2026-05-26"
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer cleanup()
+
+	got, err := provider.waitForStockOrderTerminal(context.Background(), "order-id", time.Second)
+	if err != nil {
+		t.Fatalf("waitForStockOrderTerminal returned error: %v", err)
+	}
+	if got["state"] != "filled" {
+		t.Fatalf("state = %v, want filled", got["state"])
+	}
+	if got["executed_quantity"] != "2" || got["average_price"] != "6.17" || got["executed_notional"] != "12.34" {
+		t.Fatalf("unexpected execution fields: %#v", got)
+	}
+	if got["settlement_date"] != "2026-05-26" {
+		t.Fatalf("settlement_date = %v, want 2026-05-26", got["settlement_date"])
+	}
+}
+
 func testBrokerageProvider(t *testing.T) (*BrokerageProvider, func()) {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return testBrokerageProviderWithHandler(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		originalHost := r.Header.Get("X-Original-Host")
 		switch {
@@ -45,7 +134,12 @@ func testBrokerageProvider(t *testing.T) (*BrokerageProvider, func()) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	})
+}
+
+func testBrokerageProviderWithHandler(t *testing.T, handler http.HandlerFunc) (*BrokerageProvider, func()) {
+	t.Helper()
+	server := httptest.NewServer(handler)
 
 	tmp := t.TempDir()
 	sessionPath := filepath.Join(tmp, "sessions", "robinhood_test.json")
