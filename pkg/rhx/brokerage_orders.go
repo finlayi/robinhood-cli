@@ -270,6 +270,12 @@ func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrd
 		}
 		stopPrice = roundPrice(*intent.StopPrice)
 	}
+	// market_hours must agree with extended_hours or the order API rejects
+	// with "Extended hours and market hours mismatch."
+	marketHours := "regular_hours"
+	if intent.ExtendedHours {
+		marketHours = "extended_hours"
+	}
 	payload := map[string]any{
 		"account":            account["url"],
 		"instrument":         instrument["url"],
@@ -285,7 +291,7 @@ func (p *BrokerageProvider) placeStockOrder(ctx context.Context, intent StockOrd
 		"time_in_force":      intent.TimeInForce,
 		"trigger":            trigger,
 		"side":               intent.Side,
-		"market_hours":       "regular_hours",
+		"market_hours":       marketHours,
 		"extended_hours":     intent.ExtendedHours,
 		"order_form_version": 4,
 	}
