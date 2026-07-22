@@ -2,6 +2,7 @@ package rhx
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -113,6 +114,65 @@ func TestWaitForStockOrderTerminalReturnsNormalizedFill(t *testing.T) {
 	}
 	if got["settlement_date"] != "2026-05-26" {
 		t.Fatalf("settlement_date = %v, want 2026-05-26", got["settlement_date"])
+	}
+}
+
+func TestPlaceStockOrderKeepsMarketHoursConsistent(t *testing.T) {
+	tests := []struct {
+		name            string
+		extendedHours   bool
+		wantMarketHours string
+	}{
+		{name: "regular hours", wantMarketHours: "regular_hours"},
+		{name: "extended hours", extendedHours: true, wantMarketHours: "extended_hours"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var payload map[string]any
+			provider, cleanup := testBrokerageProviderWithHandler(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/positions/":
+					_, _ = w.Write([]byte(`{"results":[]}`))
+				case "/accounts/":
+					_, _ = w.Write([]byte(`{"results":[{"url":"https://api.robinhood.com/accounts/test/"}]}`))
+				case "/instruments/":
+					_, _ = w.Write([]byte(`{"results":[{"url":"https://api.robinhood.com/instruments/test/","symbol":"AAPL"}]}`))
+				case "/quotes/":
+					_, _ = w.Write([]byte(`{"results":[{"symbol":"AAPL","ask_price":"10","bid_price":"9.9","last_trade_price":"9.95"}]}`))
+				case "/orders/":
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode order payload: %v", err)
+					}
+					_, _ = w.Write([]byte(`{"id":"order-id","state":"unconfirmed"}`))
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			defer cleanup()
+
+			quantity := 1.0
+			limitPrice := 10.0
+			_, _, err := provider.placeStockOrder(context.Background(), StockOrderIntent{
+				Symbol:        "AAPL",
+				Side:          "buy",
+				Type:          "limit",
+				Quantity:      &quantity,
+				LimitPrice:    &limitPrice,
+				TimeInForce:   "gfd",
+				ExtendedHours: test.extendedHours,
+			})
+			if err != nil {
+				t.Fatalf("placeStockOrder returned error: %v", err)
+			}
+			if got := payload["market_hours"]; got != test.wantMarketHours {
+				t.Fatalf("market_hours = %v, want %q", got, test.wantMarketHours)
+			}
+			if got := payload["extended_hours"]; got != test.extendedHours {
+				t.Fatalf("extended_hours = %v, want %v", got, test.extendedHours)
+			}
+		})
 	}
 }
 
